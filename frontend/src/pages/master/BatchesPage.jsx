@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { toast } from 'sonner';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -10,7 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import StatusBadge from '@/components/StatusBadge';
 import client from '@/api/client';
 
-const emptyForm = { name: '', university_id: '', stream_id: '', semester: '' };
+const emptyForm = { name: '', university_id: '', stream_id: '' };
+const emptyFilters = { search: '', university_id: '', stream_id: '', status: '' };
 
 export default function BatchesPage() {
   const [batches, setBatches] = useState([]);
@@ -20,6 +21,28 @@ export default function BatchesPage() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [filters, setFilters] = useState(emptyFilters);
+
+  // Stream options for the filter, derived from the loaded batches and scoped to
+  // the selected university so the choices always match what's on screen.
+  const streamOptions = useMemo(() => {
+    const seen = new Map();
+    for (const b of batches) {
+      if (!b.stream_id || !b.stream_name) continue;
+      if (filters.university_id && String(b.university_id) !== filters.university_id) continue;
+      seen.set(String(b.stream_id), b.stream_name);
+    }
+    return [...seen.entries()].map(([id, name]) => ({ id, name }));
+  }, [batches, filters.university_id]);
+
+  const filtered = useMemo(() => batches.filter((b) => {
+    if (filters.search && !b.name.toLowerCase().includes(filters.search.toLowerCase())) return false;
+    if (filters.university_id && String(b.university_id) !== filters.university_id) return false;
+    if (filters.stream_id && String(b.stream_id) !== filters.stream_id) return false;
+    if (filters.status === 'active' && !b.is_active) return false;
+    if (filters.status === 'inactive' && b.is_active) return false;
+    return true;
+  }), [batches, filters]);
 
   async function load() {
     try {
@@ -59,7 +82,6 @@ export default function BatchesPage() {
       name: b.name,
       university_id: String(b.university_id),
       stream_id: b.stream_id ? String(b.stream_id) : '',
-      semester: b.semester || '',
     });
     loadStreams(b.university_id);
     setDialogOpen(true);
@@ -116,9 +138,52 @@ export default function BatchesPage() {
     <div className="space-y-4">
       <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Batches</h1>
 
+      {/* Filter Bar */}
+      <Card>
+        <CardContent className="pt-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="space-y-1">
+              <Label>Search</Label>
+              <Input placeholder="Batch name" value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} />
+            </div>
+            <div className="space-y-1">
+              <Label>University</Label>
+              <Select value={filters.university_id} onValueChange={(v) => setFilters({ ...filters, university_id: v, stream_id: '' })}>
+                <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
+                <SelectContent>
+                  {universities.map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label>Stream</Label>
+              <Select value={filters.stream_id} onValueChange={(v) => setFilters({ ...filters, stream_id: v })} disabled={streamOptions.length === 0}>
+                <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
+                <SelectContent>
+                  {streamOptions.map((s) => <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label>Status</Label>
+              <Select value={filters.status} onValueChange={(v) => setFilters({ ...filters, status: v })}>
+                <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="inactive">Inactive</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="flex mt-3">
+            <Button size="sm" variant="outline" onClick={() => setFilters(emptyFilters)}>Clear</Button>
+          </div>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle className="text-base text-slate-900 dark:text-slate-100">All Batches</CardTitle>
+          <CardTitle className="text-base text-slate-900 dark:text-slate-100">Batches ({filtered.length})</CardTitle>
           <Button size="sm" onClick={openAdd}>Add New</Button>
         </CardHeader>
         <CardContent>
@@ -128,23 +193,21 @@ export default function BatchesPage() {
                 <TableHead className={TH}>Name</TableHead>
                 <TableHead className={TH}>University</TableHead>
                 <TableHead className={TH}>Stream</TableHead>
-                <TableHead className={TH}>Semester</TableHead>
                 <TableHead className={TH}>Status</TableHead>
                 <TableHead className={`${TH} text-right`}>Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {batches.length === 0 && (
+              {filtered.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center text-sm text-slate-500 dark:text-slate-400 py-8">No batches yet.</TableCell>
+                  <TableCell colSpan={5} className="text-center text-sm text-slate-500 dark:text-slate-400 py-8">{batches.length === 0 ? 'No batches yet.' : 'No batches match your filters.'}</TableCell>
                 </TableRow>
               )}
-              {batches.map((b) => (
+              {filtered.map((b) => (
                 <TableRow key={b.id}>
                   <TableCell className="font-medium text-slate-900 dark:text-slate-100">{b.name}</TableCell>
                   <TableCell>{b.university_name || '—'}</TableCell>
                   <TableCell>{b.stream_name || '—'}</TableCell>
-                  <TableCell>{b.semester || '—'}</TableCell>
                   <TableCell>
                     <StatusBadge status={b.is_active ? 'active' : 'inactive'} />
                   </TableCell>
@@ -187,10 +250,10 @@ export default function BatchesPage() {
               </Select>
             </div>
             <div className="space-y-1">
-              <Label>Stream</Label>
+              <Label>Stream *</Label>
               <Select value={form.stream_id} onValueChange={(v) => setForm({ ...form, stream_id: v })} disabled={!form.university_id}>
                 <SelectTrigger className="w-full">
-                  <SelectValue placeholder="Select stream (optional)" />
+                  <SelectValue placeholder="Select stream" />
                 </SelectTrigger>
                 <SelectContent>
                   {streams.map((s) => (
@@ -199,12 +262,8 @@ export default function BatchesPage() {
                 </SelectContent>
               </Select>
             </div>
-            <div className="space-y-1">
-              <Label>Semester</Label>
-              <Input value={form.semester} onChange={(e) => setForm({ ...form, semester: e.target.value })} placeholder="e.g. Semester 1" />
-            </div>
             <DialogFooter>
-              <Button type="submit" disabled={saving || !form.university_id}>{saving ? 'Saving...' : 'Save'}</Button>
+              <Button type="submit" disabled={saving || !form.university_id || !form.stream_id}>{saving ? 'Saving...' : 'Save'}</Button>
             </DialogFooter>
           </form>
         </DialogContent>

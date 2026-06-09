@@ -4,6 +4,7 @@ import { useAuth } from '@/context/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { PasswordInput } from '@/components/ui/password-input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
@@ -253,8 +254,7 @@ export default function UsersPage() {
           <form onSubmit={handleReset} className="space-y-3">
             <div className="space-y-1">
               <Label>New Password</Label>
-              <Input
-                type="password"
+              <PasswordInput
                 value={resetPassword}
                 onChange={(e) => setResetPassword(e.target.value)}
                 placeholder="Minimum 8 characters"

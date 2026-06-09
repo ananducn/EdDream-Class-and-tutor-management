@@ -20,6 +20,8 @@ import DashboardPage from '@/pages/DashboardPage';
 import ReportsPage from '@/pages/ReportsPage';
 import UsersPage from '@/pages/UsersPage';
 import ActivityLogPage from '@/pages/ActivityLogPage';
+import CurriculumPage from '@/pages/CurriculumPage';
+import ClassOverviewPage from '@/pages/ClassOverviewPage';
 
 function ProtectedRoute({ children, adminOnly = false }) {
   const { user, isLoading, isAdmin } = useAuth();
@@ -76,6 +78,8 @@ export default function App() {
           <Route path="/timetable/:universityId/:batchId" element={<ProtectedRoute><TimetableCalendarPage /></ProtectedRoute>} />
           <Route path="/faculty" element={<ProtectedRoute adminOnly><FacultyPage /></ProtectedRoute>} />
           <Route path="/reports" element={<ProtectedRoute><ReportsPage /></ProtectedRoute>} />
+          <Route path="/curriculum" element={<ProtectedRoute><CurriculumPage /></ProtectedRoute>} />
+          <Route path="/class-overview" element={<ProtectedRoute><ClassOverviewPage /></ProtectedRoute>} />
           <Route path="/users" element={<ProtectedRoute adminOnly><UsersPage /></ProtectedRoute>} />
           <Route path="/activity-log" element={<ProtectedRoute adminOnly><ActivityLogPage /></ProtectedRoute>} />
 

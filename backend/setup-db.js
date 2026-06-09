@@ -29,7 +29,6 @@ await sql`
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     university_id INTEGER REFERENCES universities(id),
-    academic_year TEXT,
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT NOW()
   )
@@ -39,9 +38,8 @@ await sql`
   CREATE TABLE IF NOT EXISTS batches (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
-    stream_id INTEGER REFERENCES streams(id),
+    stream_id INTEGER NOT NULL REFERENCES streams(id),
     university_id INTEGER REFERENCES universities(id),
-    semester TEXT,
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT NOW()
   )
@@ -53,8 +51,7 @@ await sql`
     name TEXT NOT NULL,
     subject_code TEXT,
     university_id INTEGER REFERENCES universities(id),
-    stream_id INTEGER REFERENCES streams(id),
-    semester TEXT,
+    stream_id INTEGER NOT NULL REFERENCES streams(id),
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT NOW()
   )
@@ -199,6 +196,68 @@ await sql`
     record_id INTEGER,
     details TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
+  )
+`;
+
+await sql`
+  CREATE TABLE IF NOT EXISTS academic_years (
+    id SERIAL PRIMARY KEY,
+    batch_id INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    year_order INTEGER NOT NULL DEFAULT 1,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )
+`;
+
+await sql`
+  CREATE TABLE IF NOT EXISTS semesters (
+    id SERIAL PRIMARY KEY,
+    academic_year_id INTEGER NOT NULL REFERENCES academic_years(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    semester_order INTEGER NOT NULL DEFAULT 1,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )
+`;
+
+await sql`
+  CREATE TABLE IF NOT EXISTS academic_year_subjects (
+    id SERIAL PRIMARY KEY,
+    academic_year_id INTEGER NOT NULL REFERENCES academic_years(id) ON DELETE CASCADE,
+    subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+    semester_id INTEGER REFERENCES semesters(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(academic_year_id, subject_id)
+  )
+`;
+
+await sql`
+  CREATE TABLE IF NOT EXISTS chapters (
+    id SERIAL PRIMARY KEY,
+    academic_year_subject_id INTEGER NOT NULL REFERENCES academic_year_subjects(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    description TEXT,
+    chapter_order INTEGER NOT NULL DEFAULT 1,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )
+`;
+
+await sql`
+  CREATE TABLE IF NOT EXISTS learning_resources (
+    id SERIAL PRIMARY KEY,
+    chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    type TEXT NOT NULL CHECK (type IN ('notes','pdf','video','assignment','quiz','question_paper')),
+    title TEXT NOT NULL,
+    url TEXT,
+    description TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT true,
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
   )
 `;
 

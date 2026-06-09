@@ -32,10 +32,10 @@ router.get('/', auth, async (req, res) => {
 
 router.post('/', auth, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden.' });
-  const { name, university_id, academic_year } = req.body;
+  const { name, university_id } = req.body;
   if (!name || !university_id) return res.status(400).json({ error: 'Name and university are required.' });
   const rows = await sql`
-    INSERT INTO streams (name, university_id, academic_year) VALUES (${name}, ${university_id}, ${academic_year || null})
+    INSERT INTO streams (name, university_id) VALUES (${name}, ${university_id})
     RETURNING *
   `;
   await logActivity(req.user.id, req.user.name, req.user.role, 'create_stream', 'stream', rows[0].id, `Created stream: ${name}`);
@@ -44,10 +44,10 @@ router.post('/', auth, async (req, res) => {
 
 router.put('/:id', auth, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden.' });
-  const { name, university_id, academic_year } = req.body;
+  const { name, university_id } = req.body;
   if (!name || !university_id) return res.status(400).json({ error: 'Name and university are required.' });
   const rows = await sql`
-    UPDATE streams SET name = ${name}, university_id = ${university_id}, academic_year = ${academic_year || null}
+    UPDATE streams SET name = ${name}, university_id = ${university_id}
     WHERE id = ${req.params.id} RETURNING *
   `;
   if (!rows[0]) return res.status(404).json({ error: 'Not found.' });

@@ -16,9 +16,9 @@ router.get('/', auth, async (req, res) => {
 router.post('/', auth, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden.' });
   const { name, short_code } = req.body;
-  if (!name) return res.status(400).json({ error: 'Name is required.' });
+  if (!name || !short_code) return res.status(400).json({ error: 'Name and short code are required.' });
   const rows = await sql`
-    INSERT INTO universities (name, short_code) VALUES (${name}, ${short_code || null})
+    INSERT INTO universities (name, short_code) VALUES (${name}, ${short_code})
     RETURNING *
   `;
   await logActivity(req.user.id, req.user.name, req.user.role, 'create_university', 'university', rows[0].id, `Created university: ${name}`);
@@ -28,9 +28,9 @@ router.post('/', auth, async (req, res) => {
 router.put('/:id', auth, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden.' });
   const { name, short_code } = req.body;
-  if (!name) return res.status(400).json({ error: 'Name is required.' });
+  if (!name || !short_code) return res.status(400).json({ error: 'Name and short code are required.' });
   const rows = await sql`
-    UPDATE universities SET name = ${name}, short_code = ${short_code || null}
+    UPDATE universities SET name = ${name}, short_code = ${short_code}
     WHERE id = ${req.params.id} RETURNING *
   `;
   if (!rows[0]) return res.status(404).json({ error: 'Not found.' });

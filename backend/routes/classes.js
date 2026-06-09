@@ -6,8 +6,45 @@ import { mondayOf, dayNameOf, timesOverlap } from '../lib/week.js';
 
 const router = express.Router();
 
-const JOIN = 'FROM class_entries c LEFT JOIN faculty f ON f.id = c.faculty_id LEFT JOIN subjects sub ON sub.id = c.subject_id LEFT JOIN universities u ON u.id = c.university_id LEFT JOIN batches b ON b.id = c.batch_id LEFT JOIN streams st ON st.id = c.stream_id';
-const SELECT_COLS = 'c.*, f.name AS faculty_name, sub.name AS subject_name, u.name AS university_name, b.name AS batch_name, st.name AS stream_name';
+const JOIN = 'FROM class_entries c LEFT JOIN faculty f ON f.id = c.faculty_id LEFT JOIN subjects sub ON sub.id = c.subject_id LEFT JOIN universities u ON u.id = c.university_id LEFT JOIN batches b ON b.id = c.batch_id LEFT JOIN streams st ON st.id = c.stream_id LEFT JOIN chapters ch ON ch.id = c.chapter_id LEFT JOIN academic_years ay ON ay.id = c.academic_year_id LEFT JOIN semesters sem ON sem.id = c.semester_id';
+const SELECT_COLS = 'c.*, f.name AS faculty_name, sub.name AS subject_name, u.name AS university_name, b.name AS batch_name, st.name AS stream_name, ch.title AS chapter_title, ay.name AS academic_year_name, sem.name AS semester_name';
+
+function buildClassFilters(query) {
+  const {
+    date_from, date_to, faculty_id, subject_id, university_id, stream_id, batch_id,
+    academic_year_id, semester_id,
+    class_mode, is_recorded, editing_status, upload_youtube, upload_student_app, payment_status, class_status,
+  } = query;
+
+  const conditions = [];
+  const params = [];
+  let i = 1;
+
+  if (date_from)        { conditions.push(`c.date >= $${i++}`);             params.push(date_from); }
+  if (date_to)          { conditions.push(`c.date <= $${i++}`);             params.push(date_to); }
+  if (faculty_id)       { conditions.push(`c.faculty_id = $${i++}`);        params.push(faculty_id); }
+  if (subject_id)       { conditions.push(`c.subject_id = $${i++}`);        params.push(subject_id); }
+  if (university_id)    { conditions.push(`c.university_id = $${i++}`);     params.push(university_id); }
+  if (stream_id)        { conditions.push(`c.stream_id = $${i++}`);         params.push(stream_id); }
+  if (batch_id)         { conditions.push(`c.batch_id = $${i++}`);          params.push(batch_id); }
+  if (academic_year_id) { conditions.push(`c.academic_year_id = $${i++}`);  params.push(academic_year_id); }
+  if (semester_id)      { conditions.push(`c.semester_id = $${i++}`);       params.push(semester_id); }
+  if (class_mode)       { conditions.push(`c.class_mode = $${i++}`);        params.push(class_mode); }
+  if (is_recorded !== undefined && is_recorded !== '') {
+    conditions.push(`c.is_recorded = $${i++}`);                             params.push(is_recorded === 'true');
+  }
+  if (editing_status)   { conditions.push(`c.editing_status = $${i++}`);    params.push(editing_status); }
+  if (upload_youtube !== undefined && upload_youtube !== '') {
+    conditions.push(`c.upload_youtube = $${i++}`);                          params.push(upload_youtube === 'true');
+  }
+  if (upload_student_app !== undefined && upload_student_app !== '') {
+    conditions.push(`c.upload_student_app = $${i++}`);                      params.push(upload_student_app === 'true');
+  }
+  if (payment_status)   { conditions.push(`c.payment_status = $${i++}`);    params.push(payment_status); }
+  if (class_status)     { conditions.push(`c.class_status = $${i++}`);      params.push(class_status); }
+
+  return { conditions, params };
+}
 
 // Resolve the stream for a batch (a batch belongs to exactly one stream).
 async function streamForBatch(batchId) {
@@ -37,37 +74,44 @@ async function findOrCreateTimetable({ universityId, batchId, weekStart, userId 
 
 router.get('/', auth, async (req, res, next) => {
   try {
-    const {
-      date_from, date_to, faculty_id, subject_id, university_id, batch_id,
-      class_mode, is_recorded, editing_status, upload_youtube, upload_student_app, payment_status, class_status,
-    } = req.query;
-
-    const conditions = [];
-    const params = [];
-    let i = 1;
-
-    if (date_from)        { conditions.push(`c.date >= $${i++}`);                  params.push(date_from); }
-    if (date_to)          { conditions.push(`c.date <= $${i++}`);                  params.push(date_to); }
-    if (faculty_id)       { conditions.push(`c.faculty_id = $${i++}`);             params.push(faculty_id); }
-    if (subject_id)       { conditions.push(`c.subject_id = $${i++}`);             params.push(subject_id); }
-    if (university_id)    { conditions.push(`c.university_id = $${i++}`);          params.push(university_id); }
-    if (batch_id)         { conditions.push(`c.batch_id = $${i++}`);               params.push(batch_id); }
-    if (class_mode)       { conditions.push(`c.class_mode = $${i++}`);             params.push(class_mode); }
-    if (is_recorded !== undefined && is_recorded !== '') {
-                            conditions.push(`c.is_recorded = $${i++}`);            params.push(is_recorded === 'true'); }
-    if (editing_status)   { conditions.push(`c.editing_status = $${i++}`);         params.push(editing_status); }
-    if (upload_youtube !== undefined && upload_youtube !== '') {
-                            conditions.push(`c.upload_youtube = $${i++}`);         params.push(upload_youtube === 'true'); }
-    if (upload_student_app !== undefined && upload_student_app !== '') {
-                            conditions.push(`c.upload_student_app = $${i++}`);     params.push(upload_student_app === 'true'); }
-    if (payment_status)   { conditions.push(`c.payment_status = $${i++}`);         params.push(payment_status); }
-    if (class_status)     { conditions.push(`c.class_status = $${i++}`);           params.push(class_status); }
-
+    const { conditions, params } = buildClassFilters(req.query);
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    const query = `SELECT ${SELECT_COLS} ${JOIN} ${where} ORDER BY c.date DESC, c.start_time DESC`;
-
-    const rows = await sql.query(query, params);
+    const rows = await sql.query(
+      `SELECT ${SELECT_COLS} ${JOIN} ${where} ORDER BY c.date DESC, c.start_time DESC`,
+      params
+    );
     res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/summary', auth, async (req, res, next) => {
+  try {
+    const { conditions, params } = buildClassFilters(req.query);
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const rows = await sql.query(
+      `SELECT
+        COUNT(*)::int AS total,
+        COUNT(*) FILTER (WHERE c.class_status = 'taken')::int AS taken,
+        COUNT(*) FILTER (WHERE c.class_status = 'not_taken')::int AS not_taken,
+        COUNT(*) FILTER (WHERE c.class_status = 'scheduled')::int AS scheduled,
+        COUNT(*) FILTER (WHERE c.is_cancelled = true)::int AS cancelled,
+        COUNT(*) FILTER (WHERE c.is_recorded = true)::int AS recorded,
+        COUNT(*) FILTER (WHERE c.is_recorded = false)::int AS not_recorded,
+        COUNT(*) FILTER (WHERE c.editing_status = 'edited')::int AS edited,
+        COUNT(*) FILTER (WHERE c.is_recorded = true AND c.editing_status = 'not_edited')::int AS pending_edit,
+        COUNT(*) FILTER (WHERE c.upload_student_app = true)::int AS upload_student_app,
+        COUNT(*) FILTER (WHERE c.upload_youtube = true)::int AS upload_youtube,
+        COUNT(*) FILTER (WHERE c.upload_gdrive = true)::int AS upload_gdrive,
+        COUNT(*) FILTER (WHERE c.upload_harddisk = true)::int AS upload_harddisk,
+        COUNT(*) FILTER (WHERE c.payment_status = 'paid')::int AS payment_paid,
+        COUNT(*) FILTER (WHERE c.payment_status = 'pending')::int AS payment_pending,
+        COALESCE(SUM(c.total_hours), 0)::numeric(10,2) AS total_hours
+       ${JOIN} ${where}`,
+      params
+    );
+    res.json(rows[0]);
   } catch (err) {
     next(err);
   }
@@ -97,6 +141,7 @@ router.post('/', auth, async (req, res, next) => {
   try {
     const {
       date, start_time, end_time, total_hours, faculty_id, subject_id, university_id, batch_id, stream_id,
+      academic_year_id, semester_id, chapter_id,
       unit_chapter, class_mode, platform_used, notes,
       is_recorded, recording_file_name, recording_duration, storage_location, recording_link, backup_available,
       editing_status,
@@ -142,6 +187,7 @@ router.post('/', auth, async (req, res, next) => {
     const rows = await sql`
       INSERT INTO class_entries (
         date, start_time, end_time, total_hours, faculty_id, subject_id, university_id, batch_id, stream_id,
+        academic_year_id, semester_id, chapter_id,
         unit_chapter, class_mode, platform_used, notes,
         is_recorded, recording_file_name, recording_duration, storage_location, recording_link, backup_available,
         editing_status,
@@ -153,6 +199,7 @@ router.post('/', auth, async (req, res, next) => {
       ) VALUES (
         ${date}, ${start_time || null}, ${end_time || null}, ${total_hours || null},
         ${faculty_id || null}, ${subject_id || null}, ${university_id || null}, ${batch_id || null}, ${resolvedStream},
+        ${academic_year_id || null}, ${semester_id || null}, ${chapter_id || null},
         ${unit_chapter || null}, ${class_mode || null}, ${platform_used || null}, ${notes || null},
         ${is_recorded ?? false}, ${recording_file_name || null}, ${recording_duration || null},
         ${storage_location || null}, ${recording_link || null}, ${backup_available ?? false},
@@ -197,6 +244,7 @@ router.put('/:id', auth, async (req, res, next) => {
   try {
     const {
       date, start_time, end_time, total_hours, faculty_id, subject_id, university_id, batch_id, stream_id,
+      academic_year_id, semester_id, chapter_id,
       unit_chapter, class_mode, platform_used, notes,
       is_recorded, recording_file_name, recording_duration, storage_location, recording_link, backup_available,
       editing_status,
@@ -210,6 +258,17 @@ router.put('/:id', auth, async (req, res, next) => {
     if (!date) return res.status(400).json({ error: 'Date is required.' });
 
     const status = class_status || 'scheduled';
+
+    if (status === 'taken') {
+      const classTime = (start_time || '00:00').slice(0, 5);
+      const nowISO = new Date().toISOString();
+      const todayUTC = nowISO.slice(0, 10);
+      const nowTimeUTC = nowISO.slice(11, 16);
+      if (date > todayUTC || (date === todayUTC && classTime > nowTimeUTC)) {
+        return res.status(409).json({ error: `This class is scheduled for ${date} at ${classTime}. It can only be marked as taken after that time.` });
+      }
+    }
+
     const resolvedStream = stream_id || (await streamForBatch(batch_id));
 
     const rows = await sql`
@@ -218,6 +277,7 @@ router.put('/:id', auth, async (req, res, next) => {
         total_hours = ${total_hours || null}, faculty_id = ${faculty_id || null},
         subject_id = ${subject_id || null}, university_id = ${university_id || null}, batch_id = ${batch_id || null},
         stream_id = ${resolvedStream},
+        academic_year_id = ${academic_year_id || null}, semester_id = ${semester_id || null}, chapter_id = ${chapter_id || null},
         unit_chapter = ${unit_chapter || null}, class_mode = ${class_mode || null},
         platform_used = ${platform_used || null}, notes = ${notes || null},
         is_recorded = ${is_recorded ?? false}, recording_file_name = ${recording_file_name || null},

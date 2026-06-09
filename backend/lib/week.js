@@ -15,24 +15,31 @@ function parse(dateStr) {
 }
 
 function format(date) {
+  // Never emit a malformed string like "NaN-NaN-NaN" that would blow up a SQL
+  // date insert downstream — callers treat null as "no date".
+  if (Number.isNaN(date.getTime())) return null;
   const y = date.getUTCFullYear();
   const m = String(date.getUTCMonth() + 1).padStart(2, '0');
   const d = String(date.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
 
-// Monday (as 'YYYY-MM-DD') of the week containing the given date.
+// Monday (as 'YYYY-MM-DD') of the week containing the given date, or null if the
+// input can't be resolved to a valid date.
 export function mondayOf(dateStr) {
   const d = parse(dateStr);
+  if (Number.isNaN(d.getTime())) return null;
   const day = d.getUTCDay(); // 0 = Sunday … 6 = Saturday
   const offset = day === 0 ? -6 : 1 - day;
   d.setUTCDate(d.getUTCDate() + offset);
   return format(d);
 }
 
-// Day name ('Monday'…'Sunday') for the given date.
+// Day name ('Monday'…'Sunday') for the given date, or null if invalid.
 export function dayNameOf(dateStr) {
-  const day = parse(dateStr).getUTCDay();
+  const d = parse(dateStr);
+  if (Number.isNaN(d.getTime())) return null;
+  const day = d.getUTCDay();
   return DAYS[day === 0 ? 6 : day - 1];
 }
 

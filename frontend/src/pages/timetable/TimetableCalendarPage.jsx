@@ -86,6 +86,12 @@ export default function TimetableCalendarPage() {
   const navigate = useNavigate();
   const { isAdmin } = useAuth();
 
+  // Academic year / semester selector
+  const [academicYears, setAcademicYears] = useState([]);
+  const [semesters, setSemesters] = useState([]);
+  const [selectedYearId, setSelectedYearId] = useState('');
+  const [selectedSemesterId, setSelectedSemesterId] = useState('');
+
   // Reference data
   const [faculty, setFaculty] = useState([]);
   const [subjects, setSubjects] = useState([]);
@@ -121,23 +127,36 @@ export default function TimetableCalendarPage() {
 
   async function loadDropdowns() {
     try {
-      const [fRes, sRes] = await Promise.all([
+      const [fRes, ayRes] = await Promise.all([
         client.get('/faculty'),
-        client.get('/subjects', { params: { university_id: universityId } }),
+        client.get(`/academic-years?batch_id=${batchId}`),
       ]);
       setFaculty(fRes.data);
-      setSubjects(sRes.data);
+      setAcademicYears(ayRes.data);
+      // Load subjects for the currently selected year/semester (or all for this university)
+      await loadSubjects(selectedYearId, selectedSemesterId);
     } catch {
       toast.error('Failed to load reference data.');
     }
   }
 
+  async function loadSubjects(yearId, semId) {
+    try {
+      const params = { university_id: universityId };
+      if (semId) params.semester_id = semId;
+      else if (yearId) params.academic_year_id = yearId;
+      const res = await client.get('/subjects', { params });
+      setSubjects(res.data);
+    } catch { /* non-critical */ }
+  }
+
   const loadTimetables = useCallback(async () => {
     try {
-      const res = await client.get('/timetables');
-      const batchTTs = res.data.filter(
-        (t) => String(t.batch_id) === batchId && String(t.university_id) === universityId
-      );
+      const params = { batch_id: batchId };
+      if (selectedYearId)     params.academic_year_id = selectedYearId;
+      if (selectedSemesterId) params.semester_id      = selectedSemesterId;
+      const res = await client.get('/timetables', { params });
+      const batchTTs = res.data.filter((t) => String(t.university_id) === universityId);
 
       if (batchTTs[0]) {
         setUniversityName(batchTTs[0].university_name || '');
@@ -165,12 +184,34 @@ export default function TimetableCalendarPage() {
     } catch {
       toast.error('Failed to load timetables.');
     }
-  }, [universityId, batchId]);
+  }, [universityId, batchId, selectedYearId, selectedSemesterId]);
 
   useEffect(() => {
     loadDropdowns();
     loadTimetables();
   }, [universityId, batchId, loadTimetables]);
+
+  // ── Year / semester selection ─────────────────────────────────────────────────
+
+  async function handleYearChange(yearId) {
+    setSelectedYearId(yearId);
+    setSelectedSemesterId('');
+    setSemesters([]);
+    setTimetableByWeek({});
+    if (yearId) {
+      const res = await client.get(`/semesters?academic_year_id=${yearId}`);
+      setSemesters(res.data);
+      await loadSubjects(yearId, '');
+    } else {
+      await loadSubjects('', '');
+    }
+  }
+
+  async function handleSemesterChange(semId) {
+    setSelectedSemesterId(semId);
+    setTimetableByWeek({});
+    await loadSubjects(selectedYearId, semId);
+  }
 
   // ── Calendar navigation ──────────────────────────────────────────────────────
 
@@ -200,12 +241,17 @@ export default function TimetableCalendarPage() {
 
   async function ensureWeekTimetable() {
     if (currentTimetable) return currentTimetable;
-    const label = `Week of ${weekStartStr}${batchName ? ` – ${batchName}` : ''}`;
+    const yearLabel = academicYears.find((y) => String(y.id) === selectedYearId)?.name || '';
+    const semLabel  = semesters.find((s) => String(s.id) === selectedSemesterId)?.name || '';
+    const contextLabel = [yearLabel, semLabel].filter(Boolean).join(' · ');
+    const label = `Week of ${weekStartStr}${batchName ? ` – ${batchName}` : ''}${contextLabel ? ` · ${contextLabel}` : ''}`;
     const res = await client.post('/timetables', {
       name: label,
       university_id: universityId,
       batch_id: batchId,
       week_start_date: weekStartStr,
+      academic_year_id: selectedYearId || null,
+      semester_id: selectedSemesterId || null,
     });
     await loadTimetables();
     return res.data;
@@ -345,6 +391,40 @@ export default function TimetableCalendarPage() {
           {batchName || '...'}
         </span>
       </div>
+
+      {/* ── Year / Semester selector ── */}
+      {academicYears.length > 0 && (
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <label className="text-sm text-slate-600 dark:text-slate-400 shrink-0">Academic Year</label>
+            <select
+              value={selectedYearId}
+              onChange={(e) => handleYearChange(e.target.value)}
+              className="text-sm border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              <option value="">All years</option>
+              {academicYears.map((y) => (
+                <option key={y.id} value={String(y.id)}>{y.name}</option>
+              ))}
+            </select>
+          </div>
+          {semesters.length > 0 && (
+            <div className="flex items-center gap-2">
+              <label className="text-sm text-slate-600 dark:text-slate-400 shrink-0">Semester</label>
+              <select
+                value={selectedSemesterId}
+                onChange={(e) => handleSemesterChange(e.target.value)}
+                className="text-sm border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="">All semesters</option>
+                {semesters.map((s) => (
+                  <option key={s.id} value={String(s.id)}>{s.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ── Control bar ── */}
       <div className="flex flex-wrap items-center gap-2">
@@ -560,16 +640,12 @@ function SlotCard({ slot, onEdit, onSetStatus, onDelete }) {
 
   return (
     <div className={`rounded-lg border p-3 space-y-1.5 ${border}`}>
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-slate-900 dark:text-slate-100 truncate leading-tight">
-            {slot.faculty_name || '—'}
-          </p>
-          <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{slot.subject_name || '—'}</p>
-        </div>
+      {/* Status + actions on their own row so the faculty/subject names below get
+          the full card width and stay readable instead of being squeezed. */}
+      <div className="flex items-center justify-between gap-2">
+        <StatusBadge status={status} />
 
-        <div className="flex items-center gap-1.5 shrink-0">
-          <StatusBadge status={status} />
+        <div className="shrink-0">
           <DropdownMenu>
             <DropdownMenuTrigger
               className="w-6 h-6 flex items-center justify-center rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:text-slate-500 dark:hover:text-slate-200 dark:hover:bg-slate-700 transition-colors text-base leading-none"
@@ -611,6 +687,13 @@ function SlotCard({ slot, onEdit, onSetStatus, onDelete }) {
         </div>
       </div>
 
+      <div>
+        <p className="text-sm font-medium text-slate-900 dark:text-slate-100 leading-tight break-words">
+          {slot.faculty_name || '—'}
+        </p>
+        <p className="text-xs text-slate-500 dark:text-slate-400 break-words">{slot.subject_name || '—'}</p>
+      </div>
+
       {(slot.start_time || slot.end_time) && (
         <p className="text-xs text-slate-400 dark:text-slate-500">
           {slot.start_time?.slice(0, 5)} – {slot.end_time?.slice(0, 5)}
@@ -638,7 +721,11 @@ function WeeklyView({ dates, timetable, slotsForWeekDay, onAddSlot, onEditSlot, 
 
   return (
     <div className="border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden">
-      <div className="grid grid-cols-7 divide-x divide-slate-200 dark:divide-slate-700 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
+      {/* Horizontal scroll so each day column keeps a comfortable width and the
+          slot card details (faculty, subject, status) stay readable on narrow
+          screens instead of getting truncated to a single letter. */}
+      <div className="overflow-x-auto">
+      <div className="grid grid-flow-col auto-cols-[minmax(260px,1fr)] divide-x divide-slate-200 dark:divide-slate-700 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
         {dates.map((date, i) => {
           const today = isToday(date);
           return (
@@ -661,7 +748,7 @@ function WeeklyView({ dates, timetable, slotsForWeekDay, onAddSlot, onEditSlot, 
         })}
       </div>
 
-      <div className="grid grid-cols-7 divide-x divide-slate-200 dark:divide-slate-700 min-h-[420px]">
+      <div className="grid grid-flow-col auto-cols-[minmax(260px,1fr)] divide-x divide-slate-200 dark:divide-slate-700 min-h-[420px]">
         {dates.map((date, i) => {
           const dayName = DAY_NAMES[i];
           const slots = slotsForWeekDay(timetable, dayName).map((s) => ({ ...s, _timetableId: timetable.id }));
@@ -686,6 +773,7 @@ function WeeklyView({ dates, timetable, slotsForWeekDay, onAddSlot, onEditSlot, 
             </div>
           );
         })}
+      </div>
       </div>
     </div>
   );

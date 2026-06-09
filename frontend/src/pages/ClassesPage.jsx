@@ -7,17 +7,18 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
 import { Textarea } from '@/components/ui/textarea';
 import StatusBadge from '@/components/StatusBadge';
+import { useAuth } from '@/context/AuthContext';
 import client from '@/api/client';
 
 const emptyForm = {
   date: '', start_time: '', end_time: '', total_hours: '',
   faculty_id: '', subject_id: '', university_id: '', stream_id: '', batch_id: '',
+  academic_year_id: '', semester_id: '', chapter_id: '',
   class_status: 'scheduled',
   unit_chapter: '', class_mode: '', platform_used: '', notes: '',
   is_recorded: false, recording_file_name: '', recording_duration: '',
@@ -45,6 +46,7 @@ function calcHours(start, end) {
 }
 
 export default function ClassesPage() {
+  const { isAdmin } = useAuth();
   const [searchParams] = useSearchParams();
   const [classes, setClasses] = useState([]);
   const [faculty, setFaculty] = useState([]);
@@ -56,9 +58,15 @@ export default function ClassesPage() {
   const [formBatches, setFormBatches] = useState([]);
   const [formStreams, setFormStreams] = useState([]);
   const [formSubjects, setFormSubjects] = useState([]);
+  const [formAcademicYears, setFormAcademicYears] = useState([]);
+  const [formSemesters, setFormSemesters] = useState([]);
+  const [formAcademicYearSubjects, setFormAcademicYearSubjects] = useState([]);
+  const [formChapters, setFormChapters] = useState([]);
   const [filters, setFilters] = useState(emptyFilters);
-  const [sheetOpen, setSheetOpen] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
   const [viewDialog, setViewDialog] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
@@ -111,16 +119,57 @@ export default function ClassesPage() {
   }
 
   function handleFormUniChange(v) {
-    setForm({ ...form, university_id: v, stream_id: '', batch_id: '', subject_id: '' });
+    setForm({ ...form, university_id: v, stream_id: '', batch_id: '', academic_year_id: '', semester_id: '', subject_id: '', chapter_id: '' });
     setFormStreams(v ? streams.filter((s) => String(s.university_id) === v) : streams);
     setFormBatches(v ? batches.filter((b) => String(b.university_id) === v) : batches);
-    setFormSubjects(v ? subjects.filter((s) => String(s.university_id) === v) : subjects);
+    setFormAcademicYears([]); setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
   }
 
   function handleFormStreamChange(v) {
-    setForm({ ...form, stream_id: v, batch_id: '', subject_id: '' });
+    setForm({ ...form, stream_id: v, batch_id: '', academic_year_id: '', semester_id: '', subject_id: '', chapter_id: '' });
     setFormBatches(v ? batches.filter((b) => String(b.stream_id) === v) : batches.filter((b) => String(b.university_id) === form.university_id));
-    setFormSubjects(v ? subjects.filter((s) => String(s.stream_id) === v) : subjects.filter((s) => String(s.university_id) === form.university_id));
+    setFormAcademicYears([]); setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
+  }
+
+  async function handleFormBatchChange(v) {
+    setForm((f) => ({ ...f, batch_id: v, academic_year_id: '', semester_id: '', subject_id: '', chapter_id: '' }));
+    setFormAcademicYears([]); setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
+    if (v) {
+      try { const res = await client.get(`/academic-years?batch_id=${v}`); setFormAcademicYears(res.data); } catch { /**/ }
+    }
+  }
+
+  async function handleFormYearChange(v) {
+    setForm((f) => ({ ...f, academic_year_id: v, semester_id: '', subject_id: '', chapter_id: '' }));
+    setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
+    if (v) {
+      try {
+        const [semRes, subRes] = await Promise.all([
+          client.get(`/semesters?academic_year_id=${v}`),
+          client.get(`/academic-year-subjects?academic_year_id=${v}`),
+        ]);
+        setFormSemesters(semRes.data);
+        if (semRes.data.length === 0) setFormAcademicYearSubjects(subRes.data);
+      } catch { /**/ }
+    }
+  }
+
+  async function handleFormSemesterChange(v) {
+    setForm((f) => ({ ...f, semester_id: v, subject_id: '', chapter_id: '' }));
+    setFormAcademicYearSubjects([]); setFormChapters([]);
+    if (v) {
+      try { const res = await client.get(`/academic-year-subjects?semester_id=${v}`); setFormAcademicYearSubjects(res.data); } catch { /**/ }
+    }
+  }
+
+  async function handleFormSubjectChange(subjectId) {
+    setForm((f) => ({ ...f, subject_id: subjectId, chapter_id: '' }));
+    setFormChapters([]);
+    if (!subjectId) return;
+    const ays = formAcademicYearSubjects.find((s) => String(s.subject_id) === subjectId);
+    if (ays) {
+      try { const res = await client.get(`/chapters?academic_year_subject_id=${ays.id}`); setFormChapters(res.data); } catch { /**/ }
+    }
   }
 
   function handleTimeChange(field, value) {
@@ -137,11 +186,11 @@ export default function ClassesPage() {
     setForm(emptyForm);
     setFormStreams(streams);
     setFormBatches(batches);
-    setFormSubjects(subjects);
-    setSheetOpen(true);
+    setFormAcademicYears([]); setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
+    setFormOpen(true);
   }
 
-  function openEdit(c) {
+  async function openEdit(c) {
     setEditing(c);
     setForm({
       date: c.date?.slice(0, 10) || '',
@@ -153,6 +202,9 @@ export default function ClassesPage() {
       university_id: c.university_id ? String(c.university_id) : '',
       stream_id: c.stream_id ? String(c.stream_id) : '',
       batch_id: c.batch_id ? String(c.batch_id) : '',
+      academic_year_id: c.academic_year_id ? String(c.academic_year_id) : '',
+      semester_id: c.semester_id ? String(c.semester_id) : '',
+      chapter_id: c.chapter_id ? String(c.chapter_id) : '',
       class_status: c.class_status || 'scheduled',
       unit_chapter: c.unit_chapter || '',
       class_mode: c.class_mode || '',
@@ -179,15 +231,42 @@ export default function ClassesPage() {
       payment_status: c.payment_status || 'pending',
       payment_remarks: c.payment_remarks || '',
     });
+
     setFormStreams(c.university_id ? streams.filter((s) => String(s.university_id) === String(c.university_id)) : streams);
-    if (c.stream_id) {
-      setFormBatches(batches.filter((b) => String(b.stream_id) === String(c.stream_id)));
-      setFormSubjects(subjects.filter((s) => String(s.stream_id) === String(c.stream_id)));
-    } else {
-      setFormBatches(c.university_id ? batches.filter((b) => String(b.university_id) === String(c.university_id)) : batches);
-      setFormSubjects(c.university_id ? subjects.filter((s) => String(s.university_id) === String(c.university_id)) : subjects);
+    setFormBatches(
+      c.stream_id ? batches.filter((b) => String(b.stream_id) === String(c.stream_id))
+      : c.university_id ? batches.filter((b) => String(b.university_id) === String(c.university_id))
+      : batches
+    );
+    setFormAcademicYears([]); setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
+
+    if (c.batch_id) {
+      try {
+        const ayRes = await client.get(`/academic-years?batch_id=${c.batch_id}`);
+        setFormAcademicYears(ayRes.data);
+
+        if (c.academic_year_id) {
+          const [semRes, subRes] = await Promise.all([
+            client.get(`/semesters?academic_year_id=${c.academic_year_id}`),
+            c.semester_id
+              ? client.get(`/academic-year-subjects?semester_id=${c.semester_id}`)
+              : client.get(`/academic-year-subjects?academic_year_id=${c.academic_year_id}`),
+          ]);
+          setFormSemesters(semRes.data);
+          setFormAcademicYearSubjects(subRes.data);
+
+          if (c.subject_id) {
+            const ays = subRes.data.find((s) => String(s.subject_id) === String(c.subject_id));
+            if (ays) {
+              const chapRes = await client.get(`/chapters?academic_year_subject_id=${ays.id}`);
+              setFormChapters(chapRes.data);
+            }
+          }
+        }
+      } catch { /**/ }
     }
-    setSheetOpen(true);
+
+    setFormOpen(true);
   }
 
   async function quickSetStatus(c, status) {
@@ -202,6 +281,26 @@ export default function ClassesPage() {
 
   async function handleSubmit(e) {
     e.preventDefault();
+
+    // Native `required` covers the <input> fields; the Radix <Select>s need a
+    // manual check since they don't participate in HTML form validation.
+    const requiredSelects = [
+      ['faculty_id', 'Faculty'],
+      ['university_id', 'University'],
+      ['stream_id', 'Stream'],
+      ['batch_id', 'Batch'],
+      ['academic_year_id', 'Academic Year'],
+      ['subject_id', 'Subject'],
+      ['chapter_id', 'Chapter'],
+      ['class_mode', 'Class Mode'],
+    ];
+    const missing = requiredSelects.filter(([key]) => !form[key]).map(([, label]) => label);
+    if (formSemesters.length > 0 && !form.semester_id) missing.push('Semester');
+    if (missing.length) {
+      toast.error(`Please select: ${missing.join(', ')}.`);
+      return;
+    }
+
     setSaving(true);
     try {
       const payload = { ...form };
@@ -212,7 +311,7 @@ export default function ClassesPage() {
         await client.post('/classes', payload);
         toast.success('Class added.');
       }
-      setSheetOpen(false);
+      setFormOpen(false);
       loadClasses();
     } catch (err) {
       toast.error(err.response?.data?.error || 'Something went wrong.');
@@ -222,6 +321,21 @@ export default function ClassesPage() {
   }
 
   function f(v) { return (s) => setForm({ ...form, [v]: s }); }
+
+  async function handleDelete() {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await client.delete(`/classes/${deleteTarget.id}`);
+      toast.success('Class deleted.');
+      setDeleteTarget(null);
+      loadClasses();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to delete class.');
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   const TH = 'text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400';
 
@@ -356,7 +470,10 @@ export default function ClassesPage() {
                 </TableRow>
               )}
               {classes.map((c) => (
-                <TableRow key={c.id}>
+                <TableRow
+                  key={c.id}
+                  className={c.class_status === 'taken' ? 'bg-green-100 hover:bg-green-200/70 dark:bg-green-900/30 dark:hover:bg-green-900/40' : ''}
+                >
                   <TableCell className="text-slate-900 dark:text-slate-100">{c.date?.slice(0, 10)}</TableCell>
                   <TableCell>{c.faculty_name || '—'}</TableCell>
                   <TableCell>{c.subject_name || '—'}</TableCell>
@@ -385,6 +502,16 @@ export default function ClassesPage() {
                   <TableCell className="text-right space-x-2">
                     <Button size="sm" variant="outline" onClick={() => setViewDialog(c)}>View</Button>
                     <Button size="sm" variant="outline" onClick={() => openEdit(c)}>Edit</Button>
+                    {isAdmin() && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-red-600 dark:text-red-400 border-red-300 dark:border-red-700 hover:bg-red-50 dark:hover:bg-red-900"
+                        onClick={() => setDeleteTarget(c)}
+                      >
+                        Delete
+                      </Button>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}
@@ -437,13 +564,35 @@ export default function ClassesPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Add / Edit Sheet */}
-      <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-        <SheetContent className="w-full sm:max-w-2xl overflow-y-auto">
-          <SheetHeader>
-            <SheetTitle>{editing ? 'Edit Class' : 'Add Class'}</SheetTitle>
-          </SheetHeader>
-          <form onSubmit={handleSubmit} className="mt-4 space-y-5 pb-8">
+      {/* Delete Confirmation */}
+      <Dialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader><DialogTitle>Delete Class</DialogTitle></DialogHeader>
+          <p className="text-sm text-slate-600 dark:text-slate-300">
+            Are you sure you want to delete the class
+            {deleteTarget?.subject_name ? ` "${deleteTarget.subject_name}"` : ''}
+            {deleteTarget?.date ? ` on ${deleteTarget.date.slice(0, 10)}` : ''}? This action cannot be undone.
+          </p>
+          <div className="flex justify-end gap-2 mt-2">
+            <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={deleting}>Cancel</Button>
+            <Button
+              className="bg-red-600 hover:bg-red-700 text-white"
+              onClick={handleDelete}
+              disabled={deleting}
+            >
+              {deleting ? 'Deleting...' : 'Delete'}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add / Edit Modal */}
+      <Dialog open={formOpen} onOpenChange={setFormOpen}>
+        <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{editing ? 'Edit Class' : 'Add Class'}</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleSubmit} className="mt-4 space-y-5 pb-2">
 
             <div className="space-y-3">
               <p className="text-sm font-medium text-slate-900 dark:text-slate-100">Class Details</p>
@@ -453,50 +602,73 @@ export default function ClassesPage() {
                   <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} required />
                 </div>
                 <div className="space-y-1">
-                  <Label>Start Time</Label>
-                  <Input type="time" value={form.start_time} onChange={(e) => handleTimeChange('start_time', e.target.value)} />
+                  <Label>Start Time *</Label>
+                  <Input type="time" value={form.start_time} onChange={(e) => handleTimeChange('start_time', e.target.value)} required />
                 </div>
                 <div className="space-y-1">
-                  <Label>End Time</Label>
-                  <Input type="time" value={form.end_time} onChange={(e) => handleTimeChange('end_time', e.target.value)} />
+                  <Label>End Time *</Label>
+                  <Input type="time" value={form.end_time} onChange={(e) => handleTimeChange('end_time', e.target.value)} required />
                 </div>
                 <div className="space-y-1">
-                  <Label>Total Hours</Label>
-                  <Input type="number" min="0" step="0.01" value={form.total_hours} onChange={(e) => setForm({ ...form, total_hours: e.target.value })} />
+                  <Label>Total Hours *</Label>
+                  <Input type="number" min="0" step="0.01" value={form.total_hours} onChange={(e) => setForm({ ...form, total_hours: e.target.value })} required />
                 </div>
                 <div className="space-y-1">
-                  <Label>Faculty</Label>
+                  <Label>Faculty *</Label>
                   <Select value={form.faculty_id} onValueChange={(v) => setForm({ ...form, faculty_id: v })}>
                     <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
                     <SelectContent>{faculty.map((f) => <SelectItem key={f.id} value={String(f.id)}>{f.name}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-1">
-                  <Label>University</Label>
+                  <Label>University *</Label>
                   <Select value={form.university_id} onValueChange={handleFormUniChange}>
                     <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
                     <SelectContent>{universities.map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-1">
-                  <Label>Stream</Label>
+                  <Label>Stream *</Label>
                   <Select value={form.stream_id} onValueChange={handleFormStreamChange} disabled={!form.university_id}>
                     <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
                     <SelectContent>{formStreams.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-1">
-                  <Label>Batch</Label>
-                  <Select value={form.batch_id} onValueChange={(v) => setForm({ ...form, batch_id: v })} disabled={!form.university_id}>
+                  <Label>Batch *</Label>
+                  <Select value={form.batch_id} onValueChange={handleFormBatchChange} disabled={!form.stream_id}>
                     <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
                     <SelectContent>{formBatches.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.name}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-1">
-                  <Label>Subject</Label>
-                  <Select value={form.subject_id} onValueChange={(v) => setForm({ ...form, subject_id: v })} disabled={!form.university_id}>
+                  <Label>Academic Year *</Label>
+                  <Select value={form.academic_year_id} onValueChange={handleFormYearChange} disabled={!form.batch_id}>
                     <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
-                    <SelectContent>{formSubjects.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}</SelectContent>
+                    <SelectContent>{formAcademicYears.map((ay) => <SelectItem key={ay.id} value={String(ay.id)}>{ay.name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                {formSemesters.length > 0 && (
+                  <div className="space-y-1">
+                    <Label>Semester *</Label>
+                    <Select value={form.semester_id} onValueChange={handleFormSemesterChange} disabled={!form.academic_year_id}>
+                      <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
+                      <SelectContent>{formSemesters.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                )}
+                <div className="space-y-1">
+                  <Label>Subject *</Label>
+                  <Select value={form.subject_id} onValueChange={handleFormSubjectChange} disabled={!form.academic_year_id || (formSemesters.length > 0 && !form.semester_id)}>
+                    <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
+                    <SelectContent>{formAcademicYearSubjects.map((s) => <SelectItem key={s.subject_id} value={String(s.subject_id)}>{s.subject_name}</SelectItem>)}</SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label>Chapter *</Label>
+                  <Select value={form.chapter_id} onValueChange={(v) => setForm({ ...form, chapter_id: v })} disabled={!form.subject_id}>
+                    <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
+                    <SelectContent>{formChapters.map((ch) => <SelectItem key={ch.id} value={String(ch.id)}>{ch.title}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-1">
@@ -510,12 +682,8 @@ export default function ClassesPage() {
                     </SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-1 col-span-2">
-                  <Label>Unit / Chapter</Label>
-                  <Input value={form.unit_chapter} onChange={(e) => setForm({ ...form, unit_chapter: e.target.value })} />
-                </div>
                 <div className="space-y-1">
-                  <Label>Class Mode</Label>
+                  <Label>Class Mode *</Label>
                   <Select value={form.class_mode} onValueChange={(v) => setForm({ ...form, class_mode: v })}>
                     <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
                     <SelectContent>
@@ -695,8 +863,8 @@ export default function ClassesPage() {
               {saving ? 'Saving...' : 'Save Class'}
             </Button>
           </form>
-        </SheetContent>
-      </Sheet>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

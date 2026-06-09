@@ -170,11 +170,47 @@ function toCSV(rows) {
   return lines.join('\n');
 }
 
+function buildClassExportFilters(query) {
+  const {
+    date_from, date_to, faculty_id, subject_id, university_id, stream_id, batch_id,
+    academic_year_id, semester_id, class_mode, is_recorded, editing_status, payment_status, class_status,
+  } = query;
+  const conditions = [];
+  const params = [];
+  let i = 1;
+  if (date_from)        { conditions.push(`c.date >= $${i++}`);           params.push(date_from); }
+  if (date_to)          { conditions.push(`c.date <= $${i++}`);           params.push(date_to); }
+  if (faculty_id)       { conditions.push(`c.faculty_id = $${i++}`);      params.push(faculty_id); }
+  if (subject_id)       { conditions.push(`c.subject_id = $${i++}`);      params.push(subject_id); }
+  if (university_id)    { conditions.push(`c.university_id = $${i++}`);   params.push(university_id); }
+  if (stream_id)        { conditions.push(`c.stream_id = $${i++}`);       params.push(stream_id); }
+  if (batch_id)         { conditions.push(`c.batch_id = $${i++}`);        params.push(batch_id); }
+  if (academic_year_id) {
+    conditions.push(`c.subject_id IN (SELECT ays.subject_id FROM academic_year_subjects ays WHERE ays.academic_year_id = $${i++})`);
+    params.push(academic_year_id);
+  }
+  if (semester_id) {
+    conditions.push(`c.subject_id IN (SELECT ays.subject_id FROM academic_year_subjects ays WHERE ays.semester_id = $${i++})`);
+    params.push(semester_id);
+  }
+  if (class_mode)     { conditions.push(`c.class_mode = $${i++}`);        params.push(class_mode); }
+  if (is_recorded !== undefined && is_recorded !== '') {
+    conditions.push(`c.is_recorded = $${i++}`);                           params.push(is_recorded === 'true');
+  }
+  if (editing_status) { conditions.push(`c.editing_status = $${i++}`);    params.push(editing_status); }
+  if (payment_status) { conditions.push(`c.payment_status = $${i++}`);    params.push(payment_status); }
+  if (class_status)   { conditions.push(`c.class_status = $${i++}`);      params.push(class_status); }
+  return { conditions, params };
+}
+
 router.get('/export', auth, async (req, res, next) => {
   try {
     const { type, date_from, date_to } = req.query;
-    if (!type || !date_from || !date_to) {
-      return res.status(400).json({ error: 'type, date_from and date_to are required.' });
+    if (!type) {
+      return res.status(400).json({ error: 'type is required.' });
+    }
+    if (type !== 'class_overview' && (!date_from || !date_to)) {
+      return res.status(400).json({ error: 'date_from and date_to are required.' });
     }
 
     let rows = [];
@@ -238,13 +274,46 @@ router.get('/export', auth, async (req, res, next) => {
         GROUP BY u.id, u.name, sub.id, sub.name
         ORDER BY u.name, sub.name
       `;
+    } else if (type === 'class_overview') {
+      const { conditions, params } = buildClassExportFilters(req.query);
+      const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+      rows = await sql.query(
+        `SELECT
+          to_char(c.date, 'YYYY-MM-DD') AS date,
+          COALESCE(f.name, 'Unassigned') AS faculty,
+          COALESCE(sub.name, '—') AS subject,
+          COALESCE(u.name, '—') AS university,
+          COALESCE(b.name, '—') AS batch,
+          COALESCE(st.name, '—') AS stream,
+          c.total_hours,
+          c.class_mode,
+          c.class_status,
+          c.is_recorded,
+          c.editing_status,
+          c.upload_student_app,
+          c.upload_youtube,
+          c.upload_gdrive,
+          c.upload_harddisk,
+          c.payment_status,
+          c.notes
+        FROM class_entries c
+        LEFT JOIN faculty f ON f.id = c.faculty_id
+        LEFT JOIN subjects sub ON sub.id = c.subject_id
+        LEFT JOIN universities u ON u.id = c.university_id
+        LEFT JOIN batches b ON b.id = c.batch_id
+        LEFT JOIN streams st ON st.id = c.stream_id
+        ${where}
+        ORDER BY c.date DESC, c.start_time DESC`,
+        params
+      );
     } else {
       return res.status(400).json({ error: 'Invalid report type.' });
     }
 
     const csv = toCSV(rows);
+    const filename = type === 'class_overview' ? 'class_overview.csv' : `${type}_report.csv`;
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="${type}_report.csv"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(csv);
   } catch (err) {
     console.error('reports/export error:', err);

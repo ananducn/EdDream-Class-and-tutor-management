@@ -15,9 +15,9 @@ function hoursBetween(start, end) {
 }
 
 // Keep the class entry linked to a slot in sync with the slot's status.
-// - Marking a slot "taken" creates a linked class entry if none exists yet.
+// - Marking a slot "scheduled" or "taken" creates a linked class entry if none exists yet.
 // - Any status change is mirrored onto an existing linked class.
-// - "not_taken"/"scheduled" never create a class on their own.
+// - "not_taken" never creates a class on its own.
 async function syncClassForSlot(slot, timetable, userId) {
   const status = slot.class_taken_status;
   const existing = await sql`SELECT id FROM class_entries WHERE timetable_slot_id = ${slot.id}`;
@@ -30,7 +30,7 @@ async function syncClassForSlot(slot, timetable, userId) {
     return;
   }
 
-  if (status !== 'taken') return;
+  if (status === 'not_taken') return;
   if (!timetable?.week_start_date) return;
 
   const date = dateForSlot(timetable.week_start_date, slot.day_of_week);
@@ -58,14 +58,27 @@ async function syncClassForSlot(slot, timetable, userId) {
 
 router.get('/', auth, async (req, res, next) => {
   try {
-    const rows = await sql`
-      SELECT t.*, to_char(t.week_start_date, 'YYYY-MM-DD') AS week_start_date,
-             u.name AS university_name, b.name AS batch_name
-      FROM timetables t
-      LEFT JOIN universities u ON u.id = t.university_id
-      LEFT JOIN batches b ON b.id = t.batch_id
-      ORDER BY t.week_start_date DESC NULLS LAST, t.created_at DESC
-    `;
+    const { batch_id, academic_year_id, semester_id } = req.query;
+    const conditions = [];
+    const params = [];
+    let i = 1;
+    if (batch_id)         { conditions.push(`t.batch_id = $${i++}`);         params.push(batch_id); }
+    if (academic_year_id) { conditions.push(`t.academic_year_id = $${i++}`); params.push(academic_year_id); }
+    if (semester_id)      { conditions.push(`t.semester_id = $${i++}`);      params.push(semester_id); }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    const rows = await sql.query(
+      `SELECT t.*, to_char(t.week_start_date, 'YYYY-MM-DD') AS week_start_date,
+              u.name AS university_name, b.name AS batch_name,
+              ay.name AS academic_year_name, sem.name AS semester_name
+       FROM timetables t
+       LEFT JOIN universities u ON u.id = t.university_id
+       LEFT JOIN batches b ON b.id = t.batch_id
+       LEFT JOIN academic_years ay ON ay.id = t.academic_year_id
+       LEFT JOIN semesters sem ON sem.id = t.semester_id
+       ${where}
+       ORDER BY t.week_start_date DESC NULLS LAST, t.created_at DESC`,
+      params
+    );
     res.json(rows);
   } catch (err) { next(err); }
 });
@@ -74,10 +87,13 @@ router.get('/:id', auth, async (req, res, next) => {
   try {
     const timetables = await sql`
       SELECT t.*, to_char(t.week_start_date, 'YYYY-MM-DD') AS week_start_date,
-             u.name AS university_name, b.name AS batch_name
+             u.name AS university_name, b.name AS batch_name,
+             ay.name AS academic_year_name, sem.name AS semester_name
       FROM timetables t
       LEFT JOIN universities u ON u.id = t.university_id
       LEFT JOIN batches b ON b.id = t.batch_id
+      LEFT JOIN academic_years ay ON ay.id = t.academic_year_id
+      LEFT JOIN semesters sem ON sem.id = t.semester_id
       WHERE t.id = ${req.params.id}
     `;
     if (!timetables[0]) return res.status(404).json({ error: 'Not found.' });
@@ -96,11 +112,12 @@ router.get('/:id', auth, async (req, res, next) => {
 
 router.post('/', auth, async (req, res, next) => {
   try {
-    const { name, university_id, batch_id, week_start_date } = req.body;
+    const { name, university_id, batch_id, week_start_date, academic_year_id, semester_id } = req.body;
     if (!name) return res.status(400).json({ error: 'Name is required.' });
     const rows = await sql`
-      INSERT INTO timetables (name, university_id, batch_id, week_start_date, created_by)
-      VALUES (${name}, ${university_id || null}, ${batch_id || null}, ${week_start_date || null}, ${req.user.id})
+      INSERT INTO timetables (name, university_id, batch_id, week_start_date, academic_year_id, semester_id, created_by)
+      VALUES (${name}, ${university_id || null}, ${batch_id || null}, ${week_start_date || null},
+              ${academic_year_id || null}, ${semester_id || null}, ${req.user.id})
       RETURNING *
     `;
     await logActivity(req.user.id, req.user.name, req.user.role, 'create_timetable', 'timetable', rows[0].id, `Created timetable: ${name}`);
@@ -163,7 +180,7 @@ router.post('/:id/slots', auth, async (req, res, next) => {
               ${faculty_id || null}, ${subject_id || null}, ${notes || null}, ${class_taken_status || 'scheduled'})
       RETURNING *
     `;
-    if (rows[0].class_taken_status === 'taken') {
+    if (rows[0].class_taken_status !== 'not_taken') {
       await syncClassForSlot(rows[0], tt[0], req.user.id);
     }
     await logActivity(req.user.id, req.user.name, req.user.role, 'add_slot', 'timetable_slot', rows[0].id, `Added slot on ${day_of_week}`);
@@ -174,6 +191,24 @@ router.post('/:id/slots', auth, async (req, res, next) => {
 router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
   try {
     const { day_of_week, start_time, end_time, faculty_id, subject_id, notes, class_taken_status } = req.body;
+
+    if (class_taken_status === 'taken') {
+      const [tt, existing] = await Promise.all([
+        sql`SELECT to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date FROM timetables WHERE id = ${req.params.id}`,
+        sql`SELECT day_of_week, start_time FROM timetable_slots WHERE id = ${req.params.slotId}`,
+      ]);
+      if (existing[0] && tt[0]?.week_start_date) {
+        const slotDate = dateForSlot(tt[0].week_start_date, existing[0].day_of_week);
+        const slotTime = (existing[0].start_time || '00:00').slice(0, 5);
+        const nowISO = new Date().toISOString();
+        const todayUTC = nowISO.slice(0, 10);
+        const nowTimeUTC = nowISO.slice(11, 16);
+        if (slotDate > todayUTC || (slotDate === todayUTC && slotTime > nowTimeUTC)) {
+          return res.status(409).json({ error: `This class is scheduled for ${slotDate} at ${slotTime}. It can only be marked as taken after that time.` });
+        }
+      }
+    }
+
     const rows = await sql`
       UPDATE timetable_slots SET
         day_of_week = COALESCE(${day_of_week || null}, day_of_week),

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { toast } from 'sonner';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -10,7 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import StatusBadge from '@/components/StatusBadge';
 import client from '@/api/client';
 
-const emptyForm = { name: '', university_id: '', academic_year: '' };
+const emptyForm = { name: '', university_id: '' };
+const emptyFilters = { search: '', university_id: '', status: '' };
 
 export default function StreamsPage() {
   const [streams, setStreams] = useState([]);
@@ -19,6 +20,15 @@ export default function StreamsPage() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [filters, setFilters] = useState(emptyFilters);
+
+  const filtered = useMemo(() => streams.filter((s) => {
+    if (filters.search && !s.name.toLowerCase().includes(filters.search.toLowerCase())) return false;
+    if (filters.university_id && String(s.university_id) !== filters.university_id) return false;
+    if (filters.status === 'active' && !s.is_active) return false;
+    if (filters.status === 'inactive' && s.is_active) return false;
+    return true;
+  }), [streams, filters]);
 
   async function load() {
     try {
@@ -43,7 +53,7 @@ export default function StreamsPage() {
 
   function openEdit(s) {
     setEditing(s);
-    setForm({ name: s.name, university_id: String(s.university_id), academic_year: s.academic_year || '' });
+    setForm({ name: s.name, university_id: String(s.university_id) });
     setDialogOpen(true);
   }
 
@@ -93,9 +103,43 @@ export default function StreamsPage() {
     <div className="space-y-4">
       <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Streams</h1>
 
+      {/* Filter Bar */}
+      <Card>
+        <CardContent className="pt-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <div className="space-y-1">
+              <Label>Search</Label>
+              <Input placeholder="Stream name" value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} />
+            </div>
+            <div className="space-y-1">
+              <Label>University</Label>
+              <Select value={filters.university_id} onValueChange={(v) => setFilters({ ...filters, university_id: v })}>
+                <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
+                <SelectContent>
+                  {universities.map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label>Status</Label>
+              <Select value={filters.status} onValueChange={(v) => setFilters({ ...filters, status: v })}>
+                <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="inactive">Inactive</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="flex mt-3">
+            <Button size="sm" variant="outline" onClick={() => setFilters(emptyFilters)}>Clear</Button>
+          </div>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle className="text-base text-slate-900 dark:text-slate-100">All Streams</CardTitle>
+          <CardTitle className="text-base text-slate-900 dark:text-slate-100">Streams ({filtered.length})</CardTitle>
           <Button size="sm" onClick={openAdd}>Add New</Button>
         </CardHeader>
         <CardContent>
@@ -104,22 +148,20 @@ export default function StreamsPage() {
               <TableRow>
                 <TableHead className={TH}>Name</TableHead>
                 <TableHead className={TH}>University</TableHead>
-                <TableHead className={TH}>Academic Year</TableHead>
                 <TableHead className={TH}>Status</TableHead>
                 <TableHead className={`${TH} text-right`}>Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {streams.length === 0 && (
+              {filtered.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-center text-sm text-slate-500 dark:text-slate-400 py-8">No streams yet.</TableCell>
+                  <TableCell colSpan={4} className="text-center text-sm text-slate-500 dark:text-slate-400 py-8">{streams.length === 0 ? 'No streams yet.' : 'No streams match your filters.'}</TableCell>
                 </TableRow>
               )}
-              {streams.map((s) => (
+              {filtered.map((s) => (
                 <TableRow key={s.id}>
                   <TableCell className="font-medium text-slate-900 dark:text-slate-100">{s.name}</TableCell>
                   <TableCell>{s.university_name || '—'}</TableCell>
-                  <TableCell>{s.academic_year || '—'}</TableCell>
                   <TableCell>
                     <StatusBadge status={s.is_active ? 'active' : 'inactive'} />
                   </TableCell>
@@ -160,10 +202,6 @@ export default function StreamsPage() {
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-            <div className="space-y-1">
-              <Label>Academic Year</Label>
-              <Input value={form.academic_year} onChange={(e) => setForm({ ...form, academic_year: e.target.value })} placeholder="e.g. 2024-25" />
             </div>
             <DialogFooter>
               <Button type="submit" disabled={saving || !form.university_id}>{saving ? 'Saving...' : 'Save'}</Button>

@@ -141,8 +141,8 @@ export default function UniversitiesPage() {
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} required />
             </div>
             <div className="space-y-1">
-              <Label>Short Code</Label>
-              <Input value={form.short_code} onChange={(e) => setForm({ ...form, short_code: e.target.value })} placeholder="e.g. MU" />
+              <Label>Short Code *</Label>
+              <Input value={form.short_code} onChange={(e) => setForm({ ...form, short_code: e.target.value })} placeholder="e.g. MU" required />
             </div>
             <DialogFooter>
               <Button type="submit" disabled={saving}>{saving ? 'Saving...' : 'Save'}</Button>

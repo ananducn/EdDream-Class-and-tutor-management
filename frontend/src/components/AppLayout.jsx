@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-  faGauge, faChalkboardUser, faCalendarDays, faUserTie, faChartBar,
+  faGauge, faChalkboardUser, faCalendarDays, faUserTie, faChartBar, faGraduationCap,
+  faClipboardList,
   faUniversity, faCodeBranch, faLayerGroup, faBook,
   faUsers, faClockRotateLeft,
   faArrowRightFromBracket, faBarsStaggered, faChevronLeft,
@@ -18,6 +19,8 @@ const NAV_MAIN = [
   { to: '/timetable',  label: 'Timetable',  icon: faCalendarDays },
   { to: '/faculty',    label: 'Faculty',    icon: faUserTie, adminOnly: true },
   { to: '/reports',    label: 'Reports',    icon: faChartBar },
+  { to: '/curriculum',      label: 'Curriculum',     icon: faGraduationCap },
+  { to: '/class-overview', label: 'Class Overview', icon: faClipboardList },
 ];
 
 const NAV_SETTINGS = [
@@ -185,7 +188,10 @@ export default function AppLayout({ children }) {
       </aside>
 
       {/* ── Right side ── */}
-      <div className={`flex-1 flex flex-col ${contentML} min-h-screen transition-all duration-200`}>
+      {/* min-w-0 lets this column shrink below the width of wide content (e.g. the
+          Classes table) so the table scrolls inside its own container instead of
+          forcing the whole page to scroll horizontally. */}
+      <div className={`flex-1 flex flex-col min-w-0 ${contentML} min-h-screen transition-all duration-200`}>
 
         {/* Top header */}
         <header className="sticky top-0 z-20 h-14 bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex items-center justify-end px-6 gap-4 shrink-0">
