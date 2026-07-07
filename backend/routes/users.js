@@ -45,7 +45,7 @@ router.post('/', auth, async (req, res, next) => {
       VALUES (${name}, ${email}, ${passwordHash}, ${role})
       RETURNING id, name, email, role, created_at
     `;
-    await logActivity(req.user.id, req.user.name, req.user.role, 'create_user', 'user', rows[0].id, `Created user ${email}`);
+    await logActivity(req.user.id, req.user.name, req.user.role, 'create_user', 'user', rows[0].id, `Created user: ${name} (${email}) as ${role}`);
     res.status(201).json(rows[0]);
   } catch (err) {
     console.error('POST /users error:', err);
@@ -96,7 +96,7 @@ router.put('/:id', auth, async (req, res, next) => {
       RETURNING id, name, email, role, created_at
     `;
     if (!rows[0]) return res.status(404).json({ error: 'User not found.' });
-    await logActivity(req.user.id, req.user.name, req.user.role, 'update_user', 'user', rows[0].id, `Updated user ${email}`);
+    await logActivity(req.user.id, req.user.name, req.user.role, 'update_user', 'user', rows[0].id, `Updated user: ${name} (${email}) as ${role}`);
     res.json(rows[0]);
   } catch (err) {
     console.error('PUT /users/:id error:', err);

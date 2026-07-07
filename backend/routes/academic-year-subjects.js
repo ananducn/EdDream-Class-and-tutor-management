@@ -58,6 +58,16 @@ router.get('/', auth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+async function yearSubjectNames(subjectId, academicYearId) {
+  const rows = await sql`
+    SELECT
+      (SELECT name FROM subjects WHERE id = ${subjectId}) AS subject_name,
+      (SELECT name FROM academic_years WHERE id = ${academicYearId}) AS academic_year_name,
+      (SELECT b.name FROM academic_years ay JOIN batches b ON b.id = ay.batch_id WHERE ay.id = ${academicYearId}) AS batch_name
+  `;
+  return rows[0];
+}
+
 router.post('/', auth, async (req, res, next) => {
   try {
     const { academic_year_id, subject_id, semester_id } = req.body;
@@ -70,7 +80,9 @@ router.post('/', auth, async (req, res, next) => {
       if (err.message?.includes('unique')) throw { status: 409, message: 'Subject is already in this academic year.' };
       throw err;
     });
-    await logActivity(req.user.id, req.user.name, req.user.role, 'add_year_subject', 'academic_year_subject', rows[0].id, `Added subject ${subject_id} to academic year ${academic_year_id}`);
+    const names = await yearSubjectNames(subject_id, academic_year_id);
+    await logActivity(req.user.id, req.user.name, req.user.role, 'add_year_subject', 'academic_year_subject', rows[0].id,
+      `Added subject: ${names.subject_name} to ${names.academic_year_name} (${names.batch_name})`);
     res.status(201).json(rows[0]);
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
@@ -82,7 +94,9 @@ router.delete('/:id', auth, async (req, res, next) => {
   try {
     const rows = await sql`DELETE FROM academic_year_subjects WHERE id = ${req.params.id} RETURNING *`;
     if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
-    await logActivity(req.user.id, req.user.name, req.user.role, 'remove_year_subject', 'academic_year_subject', rows[0].id, `Removed subject from academic year`);
+    const names = await yearSubjectNames(rows[0].subject_id, rows[0].academic_year_id);
+    await logActivity(req.user.id, req.user.name, req.user.role, 'remove_year_subject', 'academic_year_subject', rows[0].id,
+      `Removed subject: ${names.subject_name} from ${names.academic_year_name} (${names.batch_name})`);
     res.json({ message: 'Removed.' });
   } catch (err) { next(err); }
 });

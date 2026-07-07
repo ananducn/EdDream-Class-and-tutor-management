@@ -90,8 +90,6 @@ function FacultyTab() {
                 <TableHead className={`${TH} text-right`}>Classes</TableHead>
                 <TableHead className={`${TH} text-right`}>Total Hours</TableHead>
                 <TableHead className={`${TH} text-right`}>Recorded</TableHead>
-                <TableHead className={`${TH} text-right`}>Paid</TableHead>
-                <TableHead className={`${TH} text-right`}>Pending</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -101,8 +99,6 @@ function FacultyTab() {
                   <TableCell className="text-right">{row.total_classes}</TableCell>
                   <TableCell className="text-right">{Number(row.total_hours).toFixed(2)}</TableCell>
                   <TableCell className="text-right">{row.recorded_classes}</TableCell>
-                  <TableCell className="text-right">{row.paid_count}</TableCell>
-                  <TableCell className="text-right">{row.pending_count}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -126,12 +122,10 @@ function RecordingsTab() {
         <Button variant="outline" onClick={() => exportCSV('recordings', dateFrom, dateTo)} disabled={loading}>Export CSV</Button>
       </div>
       {data && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 gap-3">
           {[
             { label: 'Recorded', value: data.total_recorded },
             { label: 'Not Recorded', value: data.total_not_recorded },
-            { label: 'Edited', value: data.total_edited },
-            { label: 'Pending Editing', value: data.total_not_edited },
           ].map(({ label, value }) => (
             <Card key={label}>
               <CardContent className="pt-4 pb-4 flex flex-col items-center gap-1">
@@ -184,48 +178,6 @@ function UploadsTab() {
                   <TableCell className="text-center">{tick(row.upload_youtube)}</TableCell>
                   <TableCell className="text-center">{tick(row.upload_gdrive)}</TableCell>
                   <TableCell className="text-center">{tick(row.upload_harddisk)}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )
-      )}
-    </div>
-  );
-}
-
-function PaymentTab() {
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
-  const { data, loading, run } = useReport('/reports/payment');
-
-  return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-end gap-3">
-        <DateRange dateFrom={dateFrom} dateTo={dateTo} onFromChange={setDateFrom} onToChange={setDateTo} />
-        <Button onClick={() => run(dateFrom, dateTo)} disabled={loading}>{loading ? 'Loading…' : 'Run Report'}</Button>
-        <Button variant="outline" onClick={() => exportCSV('payment', dateFrom, dateTo)} disabled={loading}>Export CSV</Button>
-      </div>
-      {data && (
-        !data.length ? <EmptyState /> : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className={TH}>Faculty</TableHead>
-                <TableHead className={`${TH} text-right`}>Total Hours</TableHead>
-                <TableHead className={`${TH} text-right`}>Payable Hours</TableHead>
-                <TableHead className={`${TH} text-right`}>Paid Classes</TableHead>
-                <TableHead className={`${TH} text-right`}>Pending Classes</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {data.map((row, i) => (
-                <TableRow key={i}>
-                  <TableCell className="font-medium text-slate-900 dark:text-slate-100">{row.faculty_name}</TableCell>
-                  <TableCell className="text-right">{Number(row.total_hours).toFixed(2)}</TableCell>
-                  <TableCell className="text-right">{Number(row.payable_hours).toFixed(2)}</TableCell>
-                  <TableCell className="text-right">{row.paid_count}</TableCell>
-                  <TableCell className="text-right">{row.pending_count}</TableCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -299,13 +251,11 @@ export default function ReportsPage() {
               <TabsTrigger value="faculty">Faculty</TabsTrigger>
               <TabsTrigger value="recordings">Recordings</TabsTrigger>
               <TabsTrigger value="uploads">Uploads</TabsTrigger>
-              <TabsTrigger value="payment">Payment</TabsTrigger>
               <TabsTrigger value="university">University</TabsTrigger>
             </TabsList>
             <TabsContent value="faculty"><FacultyTab /></TabsContent>
             <TabsContent value="recordings"><RecordingsTab /></TabsContent>
             <TabsContent value="uploads"><UploadsTab /></TabsContent>
-            <TabsContent value="payment"><PaymentTab /></TabsContent>
             <TabsContent value="university"><UniversityTab /></TabsContent>
           </Tabs>
         </CardContent>

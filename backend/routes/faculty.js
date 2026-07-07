@@ -61,8 +61,9 @@ router.post('/', auth, async (req, res) => {
     return res.status(500).json({ error: 'Failed to save links.' });
   }
 
-  await logActivity(req.user.id, req.user.name, req.user.role, 'create_faculty', 'faculty', facultyId, `Created faculty: ${name}`);
   const result = await getFacultyWithLinks(facultyId);
+  await logActivity(req.user.id, req.user.name, req.user.role, 'create_faculty', 'faculty', facultyId,
+    `Created faculty: ${name}${result.subjects.length ? ` — subjects: ${result.subjects.map((s) => s.name).join(', ')}` : ''}${result.universities.length ? `; universities: ${result.universities.map((u) => u.name).join(', ')}` : ''}${result.batches.length ? `; batches: ${result.batches.map((b) => b.name).join(', ')}` : ''}`);
   res.status(201).json(result);
 });
 
@@ -97,8 +98,9 @@ router.put('/:id', auth, async (req, res) => {
     return res.status(500).json({ error: 'Failed to save links.' });
   }
 
-  await logActivity(req.user.id, req.user.name, req.user.role, 'update_faculty', 'faculty', facultyId, `Updated faculty: ${name}`);
   const result = await getFacultyWithLinks(facultyId);
+  await logActivity(req.user.id, req.user.name, req.user.role, 'update_faculty', 'faculty', facultyId,
+    `Updated faculty: ${name}${result.subjects.length ? ` — subjects: ${result.subjects.map((s) => s.name).join(', ')}` : ''}${result.universities.length ? `; universities: ${result.universities.map((u) => u.name).join(', ')}` : ''}${result.batches.length ? `; batches: ${result.batches.map((b) => b.name).join(', ')}` : ''}`);
   res.json(result);
 });
 

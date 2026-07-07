@@ -7,11 +7,13 @@ import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import StatusBadge from '@/components/StatusBadge';
+import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
 
 const emptyForm = { name: '', short_code: '' };
 
 export default function UniversitiesPage() {
+  const confirm = useConfirm();
   const [universities, setUniversities] = useState([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -62,6 +64,13 @@ export default function UniversitiesPage() {
   }
 
   async function handleDeactivate(u) {
+    const ok = await confirm({
+      title: 'Deactivate university?',
+      description: `Are you sure you want to deactivate "${u.name}"?`,
+      confirmLabel: 'Deactivate',
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await client.delete(`/universities/${u.id}`);
       toast.success(`${u.name} deactivated.`);

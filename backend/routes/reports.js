@@ -24,9 +24,7 @@ router.get('/faculty', auth, async (req, res, next) => {
         COALESCE(f.name, 'Unassigned') AS faculty_name,
         COUNT(c.id)::int AS total_classes,
         COALESCE(SUM(c.total_hours), 0)::numeric(10,2) AS total_hours,
-        COUNT(CASE WHEN c.is_recorded = true THEN 1 END)::int AS recorded_classes,
-        COUNT(CASE WHEN c.payment_status = 'paid' THEN 1 END)::int AS paid_count,
-        COUNT(CASE WHEN c.payment_status = 'pending' THEN 1 END)::int AS pending_count
+        COUNT(CASE WHEN c.is_recorded = true THEN 1 END)::int AS recorded_classes
       FROM class_entries c
       LEFT JOIN faculty f ON f.id = c.faculty_id
       WHERE c.date BETWEEN ${date_from} AND ${date_to}
@@ -49,9 +47,7 @@ router.get('/recordings', auth, async (req, res, next) => {
     const rows = await sql`
       SELECT
         COUNT(CASE WHEN is_recorded = true THEN 1 END)::int AS total_recorded,
-        COUNT(CASE WHEN is_recorded = false THEN 1 END)::int AS total_not_recorded,
-        COUNT(CASE WHEN editing_status = 'edited' THEN 1 END)::int AS total_edited,
-        COUNT(CASE WHEN is_recorded = true AND editing_status = 'not_edited' THEN 1 END)::int AS total_not_edited
+        COUNT(CASE WHEN is_recorded = false THEN 1 END)::int AS total_not_recorded
       FROM class_entries
       WHERE date BETWEEN ${date_from} AND ${date_to}
     `;
@@ -78,38 +74,12 @@ router.get('/uploads', auth, async (req, res, next) => {
       LEFT JOIN faculty f ON f.id = c.faculty_id
       LEFT JOIN subjects sub ON sub.id = c.subject_id
       WHERE c.date BETWEEN ${date_from} AND ${date_to}
-        AND c.is_recorded = true AND c.editing_status = 'edited'
+        AND c.is_recorded = true
       ORDER BY c.date DESC
     `;
     res.json(rows);
   } catch (err) {
     console.error('reports/uploads error:', err);
-    next(err);
-  }
-});
-
-router.get('/payment', auth, async (req, res, next) => {
-  try {
-    const dates = requireDates(req, res);
-    if (!dates) return;
-    const { date_from, date_to } = dates;
-
-    const rows = await sql`
-      SELECT
-        COALESCE(f.name, 'Unassigned') AS faculty_name,
-        COALESCE(SUM(c.total_hours), 0)::numeric(10,2) AS total_hours,
-        COALESCE(SUM(c.total_hours), 0)::numeric(10,2) AS payable_hours,
-        COUNT(CASE WHEN c.payment_status = 'paid' THEN 1 END)::int AS paid_count,
-        COUNT(CASE WHEN c.payment_status = 'pending' THEN 1 END)::int AS pending_count
-      FROM class_entries c
-      LEFT JOIN faculty f ON f.id = c.faculty_id
-      WHERE c.date BETWEEN ${date_from} AND ${date_to}
-      GROUP BY f.id, f.name
-      ORDER BY f.name
-    `;
-    res.json(rows);
-  } catch (err) {
-    console.error('reports/payment error:', err);
     next(err);
   }
 });
@@ -173,7 +143,7 @@ function toCSV(rows) {
 function buildClassExportFilters(query) {
   const {
     date_from, date_to, faculty_id, subject_id, university_id, stream_id, batch_id,
-    academic_year_id, semester_id, class_mode, is_recorded, editing_status, payment_status, class_status,
+    academic_year_id, semester_id, class_mode, is_recorded, class_status,
   } = query;
   const conditions = [];
   const params = [];
@@ -197,8 +167,6 @@ function buildClassExportFilters(query) {
   if (is_recorded !== undefined && is_recorded !== '') {
     conditions.push(`c.is_recorded = $${i++}`);                           params.push(is_recorded === 'true');
   }
-  if (editing_status) { conditions.push(`c.editing_status = $${i++}`);    params.push(editing_status); }
-  if (payment_status) { conditions.push(`c.payment_status = $${i++}`);    params.push(payment_status); }
   if (class_status)   { conditions.push(`c.class_status = $${i++}`);      params.push(class_status); }
   return { conditions, params };
 }
@@ -221,9 +189,7 @@ router.get('/export', auth, async (req, res, next) => {
           COALESCE(f.name, 'Unassigned') AS faculty_name,
           COUNT(c.id)::int AS total_classes,
           COALESCE(SUM(c.total_hours), 0)::numeric(10,2) AS total_hours,
-          COUNT(CASE WHEN c.is_recorded = true THEN 1 END)::int AS recorded_classes,
-          COUNT(CASE WHEN c.payment_status = 'paid' THEN 1 END)::int AS paid_count,
-          COUNT(CASE WHEN c.payment_status = 'pending' THEN 1 END)::int AS pending_count
+          COUNT(CASE WHEN c.is_recorded = true THEN 1 END)::int AS recorded_classes
         FROM class_entries c LEFT JOIN faculty f ON f.id = c.faculty_id
         WHERE c.date BETWEEN ${date_from} AND ${date_to}
         GROUP BY f.id, f.name ORDER BY total_hours DESC
@@ -232,9 +198,7 @@ router.get('/export', auth, async (req, res, next) => {
       const r = await sql`
         SELECT
           COUNT(CASE WHEN is_recorded = true THEN 1 END)::int AS total_recorded,
-          COUNT(CASE WHEN is_recorded = false THEN 1 END)::int AS total_not_recorded,
-          COUNT(CASE WHEN editing_status = 'edited' THEN 1 END)::int AS total_edited,
-          COUNT(CASE WHEN is_recorded = true AND editing_status = 'not_edited' THEN 1 END)::int AS total_not_edited
+          COUNT(CASE WHEN is_recorded = false THEN 1 END)::int AS total_not_recorded
         FROM class_entries WHERE date BETWEEN ${date_from} AND ${date_to}
       `;
       rows = r;
@@ -247,19 +211,8 @@ router.get('/export', auth, async (req, res, next) => {
         LEFT JOIN faculty f ON f.id = c.faculty_id
         LEFT JOIN subjects sub ON sub.id = c.subject_id
         WHERE c.date BETWEEN ${date_from} AND ${date_to}
-          AND c.is_recorded = true AND c.editing_status = 'edited'
+          AND c.is_recorded = true
         ORDER BY c.date DESC
-      `;
-    } else if (type === 'payment') {
-      rows = await sql`
-        SELECT COALESCE(f.name,'Unassigned') AS faculty_name,
-          COALESCE(SUM(c.total_hours),0)::numeric(10,2) AS total_hours,
-          COALESCE(SUM(c.total_hours),0)::numeric(10,2) AS payable_hours,
-          COUNT(CASE WHEN c.payment_status='paid' THEN 1 END)::int AS paid_count,
-          COUNT(CASE WHEN c.payment_status='pending' THEN 1 END)::int AS pending_count
-        FROM class_entries c LEFT JOIN faculty f ON f.id = c.faculty_id
-        WHERE c.date BETWEEN ${date_from} AND ${date_to}
-        GROUP BY f.id, f.name ORDER BY f.name
       `;
     } else if (type === 'university') {
       rows = await sql`
@@ -289,12 +242,10 @@ router.get('/export', auth, async (req, res, next) => {
           c.class_mode,
           c.class_status,
           c.is_recorded,
-          c.editing_status,
           c.upload_student_app,
           c.upload_youtube,
           c.upload_gdrive,
           c.upload_harddisk,
-          c.payment_status,
           c.notes
         FROM class_entries c
         LEFT JOIN faculty f ON f.id = c.faculty_id

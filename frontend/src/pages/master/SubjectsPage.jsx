@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import StatusBadge from '@/components/StatusBadge';
+import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
 
 const emptyForm = { name: '', subject_code: '', university_id: '', stream_id: '' };
@@ -16,6 +17,7 @@ const emptyAssignment = { batch_id: '', academic_year_id: '', semester_id: '' };
 const emptyFilters = { search: '', university_id: '', stream_id: '', status: '', batch_id: '', academic_year_id: '', semester_id: '', assigned: '' };
 
 export default function SubjectsPage() {
+  const confirm = useConfirm();
   const [subjects, setSubjects] = useState([]);
   const [universities, setUniversities] = useState([]);
   const [streams, setStreams] = useState([]);
@@ -285,6 +287,13 @@ export default function SubjectsPage() {
   }
 
   async function handleDeactivate(s) {
+    const ok = await confirm({
+      title: 'Deactivate subject?',
+      description: `Are you sure you want to deactivate "${s.name}"?`,
+      confirmLabel: 'Deactivate',
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await client.delete(`/subjects/${s.id}`);
       toast.success(`${s.name} deactivated.`);

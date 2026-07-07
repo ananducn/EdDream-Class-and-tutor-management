@@ -51,6 +51,15 @@ router.get('/', auth, async (req, res) => {
   res.json(rows);
 });
 
+async function placeNames(universityId, streamId) {
+  const rows = await sql`
+    SELECT
+      (SELECT name FROM universities WHERE id = ${universityId}) AS university_name,
+      (SELECT name FROM streams WHERE id = ${streamId}) AS stream_name
+  `;
+  return rows[0];
+}
+
 router.post('/', auth, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden.' });
   const { name, subject_code, university_id, stream_id, assignments } = req.body;
@@ -71,7 +80,9 @@ router.post('/', auth, async (req, res) => {
       ON CONFLICT (academic_year_id, subject_id) DO NOTHING
     `;
   }
-  await logActivity(req.user.id, req.user.name, req.user.role, 'create_subject', 'subject', subjectId, `Created subject: ${name}`);
+  const place = await placeNames(university_id, stream_id);
+  await logActivity(req.user.id, req.user.name, req.user.role, 'create_subject', 'subject', subjectId,
+    `Created subject: ${name} (${place.university_name || 'University N/A'} / ${place.stream_name || 'Stream N/A'})`);
   res.status(201).json(rows[0]);
 });
 
@@ -98,7 +109,9 @@ router.put('/:id', auth, async (req, res) => {
       ON CONFLICT (academic_year_id, subject_id) DO NOTHING
     `;
   }
-  await logActivity(req.user.id, req.user.name, req.user.role, 'update_subject', 'subject', rows[0].id, `Updated subject: ${name}`);
+  const place = await placeNames(university_id, stream_id);
+  await logActivity(req.user.id, req.user.name, req.user.role, 'update_subject', 'subject', rows[0].id,
+    `Updated subject: ${name} (${place.university_name || 'University N/A'} / ${place.stream_name || 'Stream N/A'})`);
   res.json(rows[0]);
 });
 
@@ -108,7 +121,9 @@ router.delete('/:id', auth, async (req, res) => {
     UPDATE subjects SET is_active = false WHERE id = ${req.params.id} RETURNING *
   `;
   if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
-  await logActivity(req.user.id, req.user.name, req.user.role, 'deactivate_subject', 'subject', rows[0].id, `Deactivated subject: ${rows[0].name}`);
+  const place = await placeNames(rows[0].university_id, rows[0].stream_id);
+  await logActivity(req.user.id, req.user.name, req.user.role, 'deactivate_subject', 'subject', rows[0].id,
+    `Deactivated subject: ${rows[0].name} (${place.university_name || 'University N/A'} / ${place.stream_name || 'Stream N/A'})`);
   res.json({ message: 'Deactivated.' });
 });
 
@@ -118,7 +133,9 @@ router.patch('/:id/activate', auth, async (req, res) => {
     UPDATE subjects SET is_active = true WHERE id = ${req.params.id} RETURNING *
   `;
   if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
-  await logActivity(req.user.id, req.user.name, req.user.role, 'activate_subject', 'subject', rows[0].id, `Activated subject: ${rows[0].name}`);
+  const place = await placeNames(rows[0].university_id, rows[0].stream_id);
+  await logActivity(req.user.id, req.user.name, req.user.role, 'activate_subject', 'subject', rows[0].id,
+    `Activated subject: ${rows[0].name} (${place.university_name || 'University N/A'} / ${place.stream_name || 'Stream N/A'})`);
   res.json({ message: 'Activated.' });
 });
 

@@ -50,12 +50,11 @@ export default function DashboardPage() {
       <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Dashboard</h1>
 
       {/* Stat Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <StatCard label="Classes This Month" value={data?.total_classes_this_month} />
         <StatCard label="Online This Month" value={data?.online_this_month} />
         <StatCard label="Offline This Month" value={data?.offline_this_month} />
         <StatCard label="Pending Recordings" value={data?.pending_recordings} highlight={data?.pending_recordings > 0} />
-        <StatCard label="Pending Editing" value={data?.pending_editing} highlight={data?.pending_editing > 0} />
       </div>
 
       {/* Faculty Hours */}
@@ -96,10 +95,10 @@ export default function DashboardPage() {
           <CardContent className="space-y-3">
             <p className="text-3xl font-bold text-slate-900 dark:text-slate-100">{data?.pending_uploads ?? 0}</p>
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              Classes that are edited but not uploaded anywhere yet.
+              Classes that are recorded but not uploaded anywhere yet.
             </p>
             <Button size="sm" asChild>
-              <Link to="/classes?editing_status=edited&upload_student_app=false">View Classes</Link>
+              <Link to="/classes?is_recorded=true&upload_student_app=false">View Classes</Link>
             </Button>
           </CardContent>
         </Card>

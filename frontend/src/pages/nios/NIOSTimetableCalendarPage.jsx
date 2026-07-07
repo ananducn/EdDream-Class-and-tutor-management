@@ -11,11 +11,8 @@ import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
 import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
+  DropdownMenuItem, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
 
 // ── Date helpers ──────────────────────────────────────────────────────────────
@@ -57,8 +54,6 @@ function toDateStr(date) {
   return `${y}-${m}-${d}`;
 }
 
-// Normalize a week_start_date coming from the API (Date object, ISO string, or
-// plain date) to 'YYYY-MM-DD' using UTC parts so it isn't shifted by timezone.
 function normWeekStart(val) {
   if (!val) return '';
   if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(val)) return val.slice(0, 10);
@@ -78,45 +73,31 @@ function isToday(date) {
   return toDateStr(date) === toDateStr(new Date());
 }
 
-const emptySlotForm = { day_of_week: '', start_time: '', end_time: '', faculty_id: '', subject_id: '', notes: '' };
+const emptySlotForm = { day_of_week: '', start_time: '', end_time: '', faculty_id: '', nios_subject_id: '', notes: '' };
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
-export default function TimetableCalendarPage() {
-  const { universityId, batchId } = useParams();
+export default function NIOSTimetableCalendarPage() {
+  const { uniId, batchId } = useParams();
   const navigate = useNavigate();
   const { isAdmin } = useAuth();
   const confirm = useConfirm();
 
-  // Academic year / semester selector
-  const [academicYears, setAcademicYears] = useState([]);
-  const [semesters, setSemesters] = useState([]);
-  const [selectedYearId, setSelectedYearId] = useState('');
-  const [selectedSemesterId, setSelectedSemesterId] = useState('');
-
-  // Reference data
   const [faculty, setFaculty] = useState([]);
   const [subjects, setSubjects] = useState([]);
-
-  // Timetable details for this batch, keyed by week_start_date ('YYYY-MM-DD')
   const [timetableByWeek, setTimetableByWeek] = useState({});
-
-  // Breadcrumb names
   const [universityName, setUniversityName] = useState('');
   const [batchName, setBatchName] = useState('');
 
-  // Calendar navigation
   const [view, setView] = useState('week');
   const [currentDate, setCurrentDate] = useState(new Date());
 
-  // Add slot dialog
   const [slotOpen, setSlotOpen] = useState(false);
   const [slotForm, setSlotForm] = useState(emptySlotForm);
   const [savingSlot, setSavingSlot] = useState(false);
 
-  // Edit slot dialog
   const [editSlotOpen, setEditSlotOpen] = useState(false);
-  const [editSlotTarget, setEditSlotTarget] = useState(null); // { slot, timetableId }
+  const [editSlotTarget, setEditSlotTarget] = useState(null);
   const [editSlotForm, setEditSlotForm] = useState(emptySlotForm);
   const [savingEditSlot, setSavingEditSlot] = useState(false);
 
@@ -129,93 +110,45 @@ export default function TimetableCalendarPage() {
 
   async function loadDropdowns() {
     try {
-      const [fRes, ayRes] = await Promise.all([
+      const [fRes, bsRes, uRes, bRes] = await Promise.all([
         client.get('/faculty'),
-        client.get(`/academic-years?batch_id=${batchId}`),
+        client.get('/nios/batch-subjects', { params: { nios_batch_id: batchId } }),
+        client.get('/nios/universities'),
+        client.get('/nios/batches', { params: { nios_university_id: uniId } }),
       ]);
       setFaculty(fRes.data);
-      setAcademicYears(ayRes.data);
-      // Load subjects for the currently selected year/semester (or all for this university)
-      await loadSubjects(selectedYearId, selectedSemesterId);
+      setSubjects(bsRes.data);
+      setUniversityName(uRes.data.find((u) => String(u.id) === uniId)?.name || '');
+      setBatchName(bRes.data.find((b) => String(b.id) === batchId)?.name || '');
     } catch {
       toast.error('Failed to load reference data.');
     }
   }
 
-  async function loadSubjects(yearId, semId) {
-    try {
-      const params = { university_id: universityId };
-      if (semId) params.semester_id = semId;
-      else if (yearId) params.academic_year_id = yearId;
-      const res = await client.get('/subjects', { params });
-      setSubjects(res.data);
-    } catch { /* non-critical */ }
-  }
-
   const loadTimetables = useCallback(async () => {
     try {
-      const params = { batch_id: batchId };
-      if (selectedYearId)     params.academic_year_id = selectedYearId;
-      if (selectedSemesterId) params.semester_id      = selectedSemesterId;
-      const res = await client.get('/timetables', { params });
-      const batchTTs = res.data.filter((t) => String(t.university_id) === universityId);
+      const res = await client.get('/nios/timetables', { params: { nios_batch_id: batchId } });
+      const batchTTs = res.data.filter((t) => String(t.nios_batch_id) === batchId);
 
-      if (batchTTs[0]) {
-        setUniversityName(batchTTs[0].university_name || '');
-        setBatchName(batchTTs[0].batch_name || '');
-      } else {
-        try {
-          const [uRes, bRes] = await Promise.all([
-            client.get('/universities'),
-            client.get('/batches', { params: { university_id: universityId } }),
-          ]);
-          setUniversityName(uRes.data.find((u) => String(u.id) === universityId)?.name || '');
-          setBatchName(bRes.data.find((b) => String(b.id) === batchId)?.name || '');
-        } catch { /* non-critical */ }
-      }
-
-      const details = await Promise.all(batchTTs.map((t) => client.get(`/timetables/${t.id}`)));
+      const details = await Promise.all(batchTTs.map((t) => client.get(`/nios/timetables/${t.id}`)));
       const map = {};
       details.forEach((r) => {
         const wk = normWeekStart(r.data.week_start_date);
         if (!wk) return;
-        // One timetable per week per batch; keep the first if duplicates exist.
         if (!map[wk]) map[wk] = r.data;
       });
       setTimetableByWeek(map);
     } catch {
       toast.error('Failed to load timetables.');
     }
-  }, [universityId, batchId, selectedYearId, selectedSemesterId]);
+  }, [batchId]);
 
   useEffect(() => {
     loadDropdowns();
     loadTimetables();
-  }, [universityId, batchId, loadTimetables]);
+  }, [uniId, batchId, loadTimetables]);
 
-  // ── Year / semester selection ─────────────────────────────────────────────────
-
-  async function handleYearChange(yearId) {
-    setSelectedYearId(yearId);
-    setSelectedSemesterId('');
-    setSemesters([]);
-    setTimetableByWeek({});
-    if (yearId) {
-      const res = await client.get(`/semesters?academic_year_id=${yearId}`);
-      setSemesters(res.data);
-      await loadSubjects(yearId, '');
-    } else {
-      await loadSubjects('', '');
-    }
-  }
-
-  async function handleSemesterChange(semId) {
-    setSelectedSemesterId(semId);
-    setTimetableByWeek({});
-    await loadSubjects(selectedYearId, semId);
-  }
-
-  // ── Calendar navigation ──────────────────────────────────────────────────────
+  // ── Calendar navigation ───────────────────────────────────────────────────
 
   function navigate_(dir) {
     const d = new Date(currentDate);
@@ -239,21 +172,16 @@ export default function TimetableCalendarPage() {
     return (tt?.slots || []).filter((s) => s.day_of_week === dayName);
   }
 
-  // ── Create the week's timetable on demand ────────────────────────────────────
+  // ── Create timetable on demand ────────────────────────────────────────────
 
   async function ensureWeekTimetable() {
     if (currentTimetable) return currentTimetable;
-    const yearLabel = academicYears.find((y) => String(y.id) === selectedYearId)?.name || '';
-    const semLabel  = semesters.find((s) => String(s.id) === selectedSemesterId)?.name || '';
-    const contextLabel = [yearLabel, semLabel].filter(Boolean).join(' · ');
-    const label = `Week of ${weekStartStr}${batchName ? ` – ${batchName}` : ''}${contextLabel ? ` · ${contextLabel}` : ''}`;
-    const res = await client.post('/timetables', {
+    const label = `Week of ${weekStartStr}${batchName ? ` – ${batchName}` : ''}`;
+    const res = await client.post('/nios/timetables', {
       name: label,
-      university_id: universityId,
-      batch_id: batchId,
+      nios_university_id: uniId,
+      nios_batch_id: batchId,
       week_start_date: weekStartStr,
-      academic_year_id: selectedYearId || null,
-      semester_id: selectedSemesterId || null,
     });
     await loadTimetables();
     return res.data;
@@ -281,7 +209,7 @@ export default function TimetableCalendarPage() {
     });
     if (!ok) return;
     try {
-      await client.delete(`/timetables/${currentTimetable.id}`);
+      await client.delete(`/nios/timetables/${currentTimetable.id}`);
       toast.success('Timetable deleted.');
       await loadTimetables();
     } catch (err) {
@@ -289,13 +217,13 @@ export default function TimetableCalendarPage() {
     }
   }
 
-  // ── Slot status ───────────────────────────────────────────────────────────────
+  // ── Slot status ───────────────────────────────────────────────────────────
 
   async function setSlotStatus(slot, status) {
     try {
-      await client.put(`/timetables/${slot._timetableId}/slots/${slot.id}`, { class_taken_status: status });
+      await client.put(`/nios/timetables/${slot._timetableId}/slots/${slot.id}`, { class_taken_status: status });
       toast.success(
-        status === 'taken' ? 'Marked taken — class added to the class list.'
+        status === 'taken' ? 'Marked taken — class added to NIOS Classes.'
           : status === 'not_taken' ? 'Marked not taken.' : 'Marked scheduled.'
       );
       await loadTimetables();
@@ -304,7 +232,7 @@ export default function TimetableCalendarPage() {
     }
   }
 
-  // ── Add slot ──────────────────────────────────────────────────────────────────
+  // ── Add slot ──────────────────────────────────────────────────────────────
 
   function openAddSlot(prefillDay) {
     setSlotForm({ ...emptySlotForm, day_of_week: prefillDay || '' });
@@ -316,7 +244,7 @@ export default function TimetableCalendarPage() {
     setSavingSlot(true);
     try {
       const tt = await ensureWeekTimetable();
-      await client.post(`/timetables/${tt.id}/slots`, slotForm);
+      await client.post(`/nios/timetables/${tt.id}/slots`, slotForm);
       toast.success('Slot added.');
       setSlotOpen(false);
       setSlotForm(emptySlotForm);
@@ -337,7 +265,7 @@ export default function TimetableCalendarPage() {
     });
     if (!ok) return;
     try {
-      await client.delete(`/timetables/${slot._timetableId}/slots/${slot.id}`);
+      await client.delete(`/nios/timetables/${slot._timetableId}/slots/${slot.id}`);
       toast.success('Slot removed.');
       await loadTimetables();
     } catch {
@@ -345,7 +273,7 @@ export default function TimetableCalendarPage() {
     }
   }
 
-  // ── Edit slot ─────────────────────────────────────────────────────────────────
+  // ── Edit slot ─────────────────────────────────────────────────────────────
 
   function openEditSlot(slot) {
     setEditSlotTarget({ slot, timetableId: slot._timetableId });
@@ -354,7 +282,7 @@ export default function TimetableCalendarPage() {
       start_time: slot.start_time?.slice(0, 5) || '',
       end_time: slot.end_time?.slice(0, 5) || '',
       faculty_id: slot.faculty_id ? String(slot.faculty_id) : '',
-      subject_id: slot.subject_id ? String(slot.subject_id) : '',
+      nios_subject_id: slot.nios_subject_id ? String(slot.nios_subject_id) : '',
       notes: slot.notes || '',
     });
     setEditSlotOpen(true);
@@ -366,7 +294,7 @@ export default function TimetableCalendarPage() {
     setSavingEditSlot(true);
     try {
       await client.put(
-        `/timetables/${editSlotTarget.timetableId}/slots/${editSlotTarget.slot.id}`,
+        `/nios/timetables/${editSlotTarget.timetableId}/slots/${editSlotTarget.slot.id}`,
         editSlotForm
       );
       toast.success('Slot updated.');
@@ -380,79 +308,38 @@ export default function TimetableCalendarPage() {
     }
   }
 
-  // ── Render ────────────────────────────────────────────────────────────────────
+  // ── Render ────────────────────────────────────────────────────────────────
 
   const weekDates = getWeekDates(currentDate);
   const monthGrid = getMonthGrid(currentDate);
 
   return (
     <div className="space-y-4">
-      {/* ── Breadcrumb ── */}
+      {/* Breadcrumb */}
       <div className="flex items-center gap-2 text-sm">
         <button
-          onClick={() => navigate('/timetable')}
+          onClick={() => navigate('/nios/timetable')}
           className="text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
         >
-          Timetable
+          NIOS Timetable
         </button>
         <span className="text-slate-300 dark:text-slate-600">›</span>
         <button
-          onClick={() => navigate(`/timetable/${universityId}`)}
+          onClick={() => navigate(`/nios/timetable/${uniId}`)}
           className="text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
         >
           {universityName || '...'}
         </button>
         <span className="text-slate-300 dark:text-slate-600">›</span>
-        <span className="font-semibold text-slate-900 dark:text-slate-100">
-          {batchName || '...'}
-        </span>
+        <span className="font-semibold text-slate-900 dark:text-slate-100">{batchName || '...'}</span>
       </div>
 
-      {/* ── Year / Semester selector ── */}
-      {academicYears.length > 0 && (
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-slate-600 dark:text-slate-400 shrink-0">Academic Year</label>
-            <select
-              value={selectedYearId}
-              onChange={(e) => handleYearChange(e.target.value)}
-              className="text-sm border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              <option value="">All years</option>
-              {academicYears.map((y) => (
-                <option key={y.id} value={String(y.id)}>{y.name}</option>
-              ))}
-            </select>
-          </div>
-          {semesters.length > 0 && (
-            <div className="flex items-center gap-2">
-              <label className="text-sm text-slate-600 dark:text-slate-400 shrink-0">Semester</label>
-              <select
-                value={selectedSemesterId}
-                onChange={(e) => handleSemesterChange(e.target.value)}
-                className="text-sm border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              >
-                <option value="">All semesters</option>
-                {semesters.map((s) => (
-                  <option key={s.id} value={String(s.id)}>{s.name}</option>
-                ))}
-              </select>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Control bar ── */}
+      {/* Control bar */}
       <div className="flex flex-wrap items-center gap-2">
         {currentTimetable ? (
           <>
-            <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
-              {currentTimetable.name}
-            </span>
-            <Button size="sm" variant="outline"
-              onClick={() => openAddSlot('')}>
-              Add Slot
-            </Button>
+            <span className="text-sm font-medium text-slate-700 dark:text-slate-200">{currentTimetable.name}</span>
+            <Button size="sm" variant="outline" onClick={() => openAddSlot('')}>Add Slot</Button>
             {isAdmin() && (
               <Button size="sm" variant="ghost"
                 className="text-red-500 hover:text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900"
@@ -462,9 +349,7 @@ export default function TimetableCalendarPage() {
             )}
           </>
         ) : view === 'week' ? (
-          <Button size="sm" onClick={handleCreateWeek} disabled={busy}>
-            + Create timetable for this week
-          </Button>
+          <Button size="sm" onClick={handleCreateWeek} disabled={busy}>+ Create timetable for this week</Button>
         ) : null}
 
         <div className="flex-1" />
@@ -473,9 +358,7 @@ export default function TimetableCalendarPage() {
           {['week', 'month'].map((v) => (
             <button key={v}
               className={`px-3 py-1.5 text-sm capitalize transition-colors ${
-                view === v
-                  ? 'bg-indigo-600 text-white'
-                  : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+                view === v ? 'bg-indigo-600 text-white' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
               }`}
               onClick={() => setView(v)}>
               {v}
@@ -490,11 +373,10 @@ export default function TimetableCalendarPage() {
           </span>
           <Button size="sm" variant="outline" onClick={() => navigate_(1)} className="px-2.5">›</Button>
         </div>
-
         <Button size="sm" variant="outline" onClick={() => setCurrentDate(new Date())}>Today</Button>
       </div>
 
-      {/* ── Weekly view ── */}
+      {/* Weekly view */}
       {view === 'week' && (
         <WeeklyView
           dates={weekDates}
@@ -507,7 +389,7 @@ export default function TimetableCalendarPage() {
         />
       )}
 
-      {/* ── Monthly view ── */}
+      {/* Monthly view */}
       {view === 'month' && (
         <MonthlyView
           currentDate={currentDate}
@@ -517,57 +399,47 @@ export default function TimetableCalendarPage() {
         />
       )}
 
-      {/* ── Add Slot dialog ── */}
+      {/* Add Slot dialog */}
       <Dialog open={slotOpen} onOpenChange={setSlotOpen}>
         <DialogContent>
           <DialogHeader><DialogTitle>Add Slot</DialogTitle></DialogHeader>
           <form onSubmit={handleAddSlot} className="space-y-4 pt-1">
             <div className="space-y-1.5">
               <Label>Day *</Label>
-              <Select value={slotForm.day_of_week}
-                onValueChange={(v) => setSlotForm({ ...slotForm, day_of_week: v })}>
+              <Select value={slotForm.day_of_week} onValueChange={(v) => setSlotForm({ ...slotForm, day_of_week: v })}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="Select day" /></SelectTrigger>
-                <SelectContent>
-                  {DAY_NAMES.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
-                </SelectContent>
+                <SelectContent>{DAY_NAMES.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>Start Time</Label>
-                <Input type="time" value={slotForm.start_time}
-                  onChange={(e) => setSlotForm({ ...slotForm, start_time: e.target.value })} />
+                <Input type="time" value={slotForm.start_time} onChange={(e) => setSlotForm({ ...slotForm, start_time: e.target.value })} />
               </div>
               <div className="space-y-1.5">
                 <Label>End Time</Label>
-                <Input type="time" value={slotForm.end_time}
-                  onChange={(e) => setSlotForm({ ...slotForm, end_time: e.target.value })} />
+                <Input type="time" value={slotForm.end_time} onChange={(e) => setSlotForm({ ...slotForm, end_time: e.target.value })} />
               </div>
             </div>
             <div className="space-y-1.5">
               <Label>Faculty</Label>
-              <Select value={slotForm.faculty_id}
-                onValueChange={(v) => setSlotForm({ ...slotForm, faculty_id: v })}>
+              <Select value={slotForm.faculty_id} onValueChange={(v) => setSlotForm({ ...slotForm, faculty_id: v })}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
-                <SelectContent>
-                  {faculty.map((f) => <SelectItem key={f.id} value={String(f.id)}>{f.name}</SelectItem>)}
-                </SelectContent>
+                <SelectContent>{faculty.map((f) => <SelectItem key={f.id} value={String(f.id)}>{f.name}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div className="space-y-1.5">
               <Label>Subject</Label>
-              <Select value={slotForm.subject_id}
-                onValueChange={(v) => setSlotForm({ ...slotForm, subject_id: v })}>
+              <Select value={slotForm.nios_subject_id} onValueChange={(v) => setSlotForm({ ...slotForm, nios_subject_id: v })}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
                 <SelectContent>
-                  {subjects.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
+                  {subjects.map((s) => <SelectItem key={s.nios_subject_id} value={String(s.nios_subject_id)}>{s.subject_name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-1.5">
               <Label>Notes</Label>
-              <Input value={slotForm.notes}
-                onChange={(e) => setSlotForm({ ...slotForm, notes: e.target.value })} />
+              <Input value={slotForm.notes} onChange={(e) => setSlotForm({ ...slotForm, notes: e.target.value })} />
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setSlotOpen(false)}>Cancel</Button>
@@ -579,57 +451,47 @@ export default function TimetableCalendarPage() {
         </DialogContent>
       </Dialog>
 
-      {/* ── Edit Slot dialog ── */}
+      {/* Edit Slot dialog */}
       <Dialog open={editSlotOpen} onOpenChange={setEditSlotOpen}>
         <DialogContent>
           <DialogHeader><DialogTitle>Edit Slot</DialogTitle></DialogHeader>
           <form onSubmit={handleEditSlot} className="space-y-4 pt-1">
             <div className="space-y-1.5">
               <Label>Day *</Label>
-              <Select value={editSlotForm.day_of_week}
-                onValueChange={(v) => setEditSlotForm({ ...editSlotForm, day_of_week: v })}>
+              <Select value={editSlotForm.day_of_week} onValueChange={(v) => setEditSlotForm({ ...editSlotForm, day_of_week: v })}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="Select day" /></SelectTrigger>
-                <SelectContent>
-                  {DAY_NAMES.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}
-                </SelectContent>
+                <SelectContent>{DAY_NAMES.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label>Start Time</Label>
-                <Input type="time" value={editSlotForm.start_time}
-                  onChange={(e) => setEditSlotForm({ ...editSlotForm, start_time: e.target.value })} />
+                <Input type="time" value={editSlotForm.start_time} onChange={(e) => setEditSlotForm({ ...editSlotForm, start_time: e.target.value })} />
               </div>
               <div className="space-y-1.5">
                 <Label>End Time</Label>
-                <Input type="time" value={editSlotForm.end_time}
-                  onChange={(e) => setEditSlotForm({ ...editSlotForm, end_time: e.target.value })} />
+                <Input type="time" value={editSlotForm.end_time} onChange={(e) => setEditSlotForm({ ...editSlotForm, end_time: e.target.value })} />
               </div>
             </div>
             <div className="space-y-1.5">
               <Label>Faculty</Label>
-              <Select value={editSlotForm.faculty_id}
-                onValueChange={(v) => setEditSlotForm({ ...editSlotForm, faculty_id: v })}>
+              <Select value={editSlotForm.faculty_id} onValueChange={(v) => setEditSlotForm({ ...editSlotForm, faculty_id: v })}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
-                <SelectContent>
-                  {faculty.map((f) => <SelectItem key={f.id} value={String(f.id)}>{f.name}</SelectItem>)}
-                </SelectContent>
+                <SelectContent>{faculty.map((f) => <SelectItem key={f.id} value={String(f.id)}>{f.name}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div className="space-y-1.5">
               <Label>Subject</Label>
-              <Select value={editSlotForm.subject_id}
-                onValueChange={(v) => setEditSlotForm({ ...editSlotForm, subject_id: v })}>
+              <Select value={editSlotForm.nios_subject_id} onValueChange={(v) => setEditSlotForm({ ...editSlotForm, nios_subject_id: v })}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
                 <SelectContent>
-                  {subjects.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
+                  {subjects.map((s) => <SelectItem key={s.nios_subject_id} value={String(s.nios_subject_id)}>{s.subject_name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-1.5">
               <Label>Notes</Label>
-              <Input value={editSlotForm.notes}
-                onChange={(e) => setEditSlotForm({ ...editSlotForm, notes: e.target.value })} />
+              <Input value={editSlotForm.notes} onChange={(e) => setEditSlotForm({ ...editSlotForm, notes: e.target.value })} />
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setEditSlotOpen(false)}>Cancel</Button>
@@ -656,68 +518,36 @@ function SlotCard({ slot, onEdit, onSetStatus, onDelete }) {
 
   return (
     <div className={`rounded-lg border p-3 space-y-1.5 ${border}`}>
-      {/* Status + actions on their own row so the faculty/subject names below get
-          the full card width and stay readable instead of being squeezed. */}
       <div className="flex items-center justify-between gap-2">
         <StatusBadge status={status} />
-
         <div className="shrink-0">
           <DropdownMenu>
-            <DropdownMenuTrigger
-              className="w-6 h-6 flex items-center justify-center rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:text-slate-500 dark:hover:text-slate-200 dark:hover:bg-slate-700 transition-colors text-base leading-none"
-              title="Actions"
-            >
+            <DropdownMenuTrigger className="w-6 h-6 flex items-center justify-center rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:text-slate-500 dark:hover:text-slate-200 dark:hover:bg-slate-700 transition-colors text-base leading-none" title="Actions">
               ⋯
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {status !== 'taken' && (
-                <DropdownMenuItem onClick={() => onSetStatus(slot, 'taken')}>
-                  Mark taken
-                </DropdownMenuItem>
-              )}
+              {status !== 'taken' && <DropdownMenuItem onClick={() => onSetStatus(slot, 'taken')}>Mark taken</DropdownMenuItem>}
               {status !== 'not_taken' && (
-                <DropdownMenuItem
-                  onClick={() => onSetStatus(slot, 'not_taken')}
-                  className="text-rose-600 focus:text-rose-600 dark:text-rose-400 dark:focus:text-rose-400"
-                >
+                <DropdownMenuItem onClick={() => onSetStatus(slot, 'not_taken')} className="text-rose-600 focus:text-rose-600 dark:text-rose-400">
                   Mark not taken
                 </DropdownMenuItem>
               )}
-              {status !== 'scheduled' && (
-                <DropdownMenuItem onClick={() => onSetStatus(slot, 'scheduled')}>
-                  Reset to scheduled
-                </DropdownMenuItem>
-              )}
+              {status !== 'scheduled' && <DropdownMenuItem onClick={() => onSetStatus(slot, 'scheduled')}>Reset to scheduled</DropdownMenuItem>}
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => onEdit(slot)}>
-                Edit slot
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                onClick={() => onDelete(slot)}
-                className="text-red-600 focus:text-red-600 dark:text-red-400 dark:focus:text-red-400"
-              >
-                Remove slot
-              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onEdit(slot)}>Edit slot</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => onDelete(slot)} className="text-red-600 focus:text-red-600 dark:text-red-400">Remove slot</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
       </div>
-
       <div>
-        <p className="text-sm font-medium text-slate-900 dark:text-slate-100 leading-tight break-words">
-          {slot.faculty_name || '—'}
-        </p>
+        <p className="text-sm font-medium text-slate-900 dark:text-slate-100 leading-tight break-words">{slot.faculty_name || '—'}</p>
         <p className="text-xs text-slate-500 dark:text-slate-400 break-words">{slot.subject_name || '—'}</p>
       </div>
-
       {(slot.start_time || slot.end_time) && (
-        <p className="text-xs text-slate-400 dark:text-slate-500">
-          {slot.start_time?.slice(0, 5)} – {slot.end_time?.slice(0, 5)}
-        </p>
+        <p className="text-xs text-slate-400 dark:text-slate-500">{slot.start_time?.slice(0, 5)} – {slot.end_time?.slice(0, 5)}</p>
       )}
-      {slot.notes && (
-        <p className="text-xs text-slate-400 dark:text-slate-500 italic">{slot.notes}</p>
-      )}
+      {slot.notes && <p className="text-xs text-slate-400 dark:text-slate-500 italic">{slot.notes}</p>}
     </div>
   );
 }
@@ -729,7 +559,7 @@ function WeeklyView({ dates, timetable, slotsForWeekDay, onAddSlot, onEditSlot, 
     return (
       <div className="rounded-xl border border-dashed border-slate-300 dark:border-slate-700 p-10 text-center">
         <p className="text-sm text-slate-500 dark:text-slate-400">
-          No timetable for this week. Use “Create timetable for this week” above to start planning.
+          No timetable for this week. Use "Create timetable for this week" above to start planning.
         </p>
       </div>
     );
@@ -737,59 +567,44 @@ function WeeklyView({ dates, timetable, slotsForWeekDay, onAddSlot, onEditSlot, 
 
   return (
     <div className="border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden">
-      {/* Horizontal scroll so each day column keeps a comfortable width and the
-          slot card details (faculty, subject, status) stay readable on narrow
-          screens instead of getting truncated to a single letter. */}
       <div className="overflow-x-auto">
-      <div className="grid grid-flow-col auto-cols-[minmax(260px,1fr)] divide-x divide-slate-200 dark:divide-slate-700 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
-        {dates.map((date, i) => {
-          const today = isToday(date);
-          return (
-            <div key={i} className={`py-3 text-center ${today ? 'bg-indigo-50 dark:bg-indigo-900' : ''}`}>
-              <p className={`text-xs font-semibold uppercase tracking-wider ${
-                today ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-400'
-              }`}>
-                {DAY_NAMES[i].slice(0, 3)}
-              </p>
-              <p className={`text-xl font-bold mt-0.5 ${
-                today ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-800 dark:text-slate-100'
-              }`}>
-                {date.getDate()}
-              </p>
-              <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">
-                {date.toLocaleDateString('en-US', { month: 'short' })}
-              </p>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="grid grid-flow-col auto-cols-[minmax(260px,1fr)] divide-x divide-slate-200 dark:divide-slate-700 min-h-[420px]">
-        {dates.map((date, i) => {
-          const dayName = DAY_NAMES[i];
-          const slots = slotsForWeekDay(timetable, dayName).map((s) => ({ ...s, _timetableId: timetable.id }));
-          const today = isToday(date);
-          return (
-            <div key={i} className={`p-2 space-y-2 ${today ? 'bg-indigo-50 dark:bg-indigo-950' : ''}`}>
-              {slots.map((slot) => (
-                <SlotCard
-                  key={slot.id}
-                  slot={slot}
-                  onEdit={onEditSlot}
-                  onSetStatus={onSetStatus}
-                  onDelete={onDeleteSlot}
-                />
-              ))}
-              <button
-                onClick={() => onAddSlot(dayName)}
-                title="Add a slot on this day"
-                className="w-full py-2 text-xs text-slate-400 dark:text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900 rounded-md transition-colors border border-dashed border-slate-200 dark:border-slate-700 hover:border-indigo-300 dark:hover:border-indigo-600">
-                + Slot
-              </button>
-            </div>
-          );
-        })}
-      </div>
+        <div className="grid grid-flow-col auto-cols-[minmax(260px,1fr)] divide-x divide-slate-200 dark:divide-slate-700 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
+          {dates.map((date, i) => {
+            const today = isToday(date);
+            return (
+              <div key={i} className={`py-3 text-center ${today ? 'bg-indigo-50 dark:bg-indigo-900' : ''}`}>
+                <p className={`text-xs font-semibold uppercase tracking-wider ${today ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                  {DAY_NAMES[i].slice(0, 3)}
+                </p>
+                <p className={`text-xl font-bold mt-0.5 ${today ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-800 dark:text-slate-100'}`}>
+                  {date.getDate()}
+                </p>
+                <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">
+                  {date.toLocaleDateString('en-US', { month: 'short' })}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+        <div className="grid grid-flow-col auto-cols-[minmax(260px,1fr)] divide-x divide-slate-200 dark:divide-slate-700 min-h-[420px]">
+          {dates.map((date, i) => {
+            const dayName = DAY_NAMES[i];
+            const slots = slotsForWeekDay(timetable, dayName).map((s) => ({ ...s, _timetableId: timetable.id }));
+            const today = isToday(date);
+            return (
+              <div key={i} className={`p-2 space-y-2 ${today ? 'bg-indigo-50 dark:bg-indigo-950' : ''}`}>
+                {slots.map((slot) => (
+                  <SlotCard key={slot.id} slot={slot} onEdit={onEditSlot} onSetStatus={onSetStatus} onDelete={onDeleteSlot} />
+                ))}
+                <button
+                  onClick={() => onAddSlot(dayName)}
+                  className="w-full py-2 text-xs text-slate-400 dark:text-slate-500 hover:text-indigo-600 dark:hover:text-indigo-300 hover:bg-indigo-50 dark:hover:bg-indigo-900 rounded-md transition-colors border border-dashed border-slate-200 dark:border-slate-700 hover:border-indigo-300 dark:hover:border-indigo-600">
+                  + Slot
+                </button>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
@@ -799,7 +614,6 @@ function WeeklyView({ dates, timetable, slotsForWeekDay, onAddSlot, onEditSlot, 
 
 function MonthlyView({ currentDate, grid, timetableByWeek, onWeekClick }) {
   const month = currentDate.getMonth();
-
   return (
     <div className="border border-slate-200 dark:border-slate-700 rounded-xl overflow-hidden">
       <div className="grid grid-cols-7 divide-x divide-slate-200 dark:divide-slate-700 bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700">
@@ -809,7 +623,6 @@ function MonthlyView({ currentDate, grid, timetableByWeek, onWeekClick }) {
           </div>
         ))}
       </div>
-
       <div className="grid grid-cols-7">
         {grid.map((date, i) => {
           const inMonth = date.getMonth() === month;
@@ -820,44 +633,31 @@ function MonthlyView({ currentDate, grid, timetableByWeek, onWeekClick }) {
           const slots = (tt?.slots || []).filter((s) => s.day_of_week === dayName);
           const isLastCol = (i + 1) % 7 === 0;
           const isLastRow = i >= 35;
-
           return (
-            <button
-              key={i}
-              onClick={() => onWeekClick(date)}
+            <button key={i} onClick={() => onWeekClick(date)}
               className={[
                 'min-h-[88px] p-2 text-left transition-colors',
                 !isLastCol && 'border-r border-slate-200 dark:border-slate-700',
                 !isLastRow && 'border-b border-slate-200 dark:border-slate-700',
-                today ? 'bg-indigo-50 dark:bg-indigo-950 hover:bg-indigo-100 dark:hover:bg-indigo-900'
-                       : 'hover:bg-slate-50 dark:hover:bg-slate-800',
+                today ? 'bg-indigo-50 dark:bg-indigo-950 hover:bg-indigo-100 dark:hover:bg-indigo-900' : 'hover:bg-slate-50 dark:hover:bg-slate-800',
                 !inMonth && 'opacity-35',
               ].filter(Boolean).join(' ')}
             >
-              <div className={`inline-flex w-6 h-6 items-center justify-center rounded-full text-sm font-semibold mb-1.5 ${
-                today ? 'bg-indigo-600 text-white' : 'text-slate-700 dark:text-slate-200'
-              }`}>
+              <div className={`inline-flex w-6 h-6 items-center justify-center rounded-full text-sm font-semibold mb-1.5 ${today ? 'bg-indigo-600 text-white' : 'text-slate-700 dark:text-slate-200'}`}>
                 {date.getDate()}
               </div>
-
               <div className="flex flex-wrap gap-1">
                 {slots.map((slot, si) => {
                   const status = slot.class_taken_status || 'scheduled';
                   return (
-                    <span key={si}
-                      className={`w-2 h-2 rounded-full shrink-0 ${
-                        status === 'not_taken'
-                          ? 'bg-rose-400 dark:bg-rose-500'
-                          : status === 'taken'
-                            ? 'bg-green-500 dark:bg-green-400'
-                            : 'bg-amber-400 dark:bg-amber-500'
-                      }`}
-                      title={`${slot.faculty_name || '—'} · ${slot.subject_name || '—'} (${status})`}
-                    />
+                    <span key={si} className={`w-2 h-2 rounded-full shrink-0 ${
+                      status === 'not_taken' ? 'bg-rose-400 dark:bg-rose-500'
+                        : status === 'taken' ? 'bg-green-500 dark:bg-green-400'
+                        : 'bg-amber-400 dark:bg-amber-500'
+                    }`} title={`${slot.faculty_name || '—'} · ${slot.subject_name || '—'} (${status})`} />
                   );
                 })}
               </div>
-
               {slots[0] && (
                 <p className="text-xs text-slate-400 dark:text-slate-500 truncate mt-1 leading-tight">
                   {slots[0].subject_name || slots[0].faculty_name || ''}
@@ -868,17 +668,10 @@ function MonthlyView({ currentDate, grid, timetableByWeek, onWeekClick }) {
           );
         })}
       </div>
-
       <div className="flex items-center gap-4 px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700">
-        <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-          <span className="w-2.5 h-2.5 rounded-full bg-green-500 dark:bg-green-400" /> Taken
-        </div>
-        <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-          <span className="w-2.5 h-2.5 rounded-full bg-rose-400 dark:bg-rose-500" /> Not taken
-        </div>
-        <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
-          <span className="w-2.5 h-2.5 rounded-full bg-amber-400 dark:bg-amber-500" /> Scheduled
-        </div>
+        <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400"><span className="w-2.5 h-2.5 rounded-full bg-green-500 dark:bg-green-400" /> Taken</div>
+        <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400"><span className="w-2.5 h-2.5 rounded-full bg-rose-400 dark:bg-rose-500" /> Not taken</div>
+        <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400"><span className="w-2.5 h-2.5 rounded-full bg-amber-400 dark:bg-amber-500" /> Scheduled</div>
       </div>
     </div>
   );

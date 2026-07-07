@@ -17,8 +17,8 @@ import client from '@/api/client';
 
 const emptyForm = {
   date: '', start_time: '', end_time: '', total_hours: '',
-  faculty_id: '', subject_id: '', university_id: '', stream_id: '', batch_id: '',
-  academic_year_id: '', semester_id: '', chapter_id: '',
+  faculty_id: '',
+  nios_university_id: '', nios_batch_id: '', nios_subject_id: '', nios_chapter_id: '',
   class_status: 'scheduled',
   unit_chapter: '', class_mode: '', platform_used: '', notes: '',
   is_recorded: false, recording_file_name: '', recording_duration: '',
@@ -30,9 +30,12 @@ const emptyForm = {
 };
 
 const emptyFilters = {
-  date_from: '', date_to: '', faculty_id: '', subject_id: '', university_id: '',
-  batch_id: '', class_mode: '', is_recorded: '', class_status: '',
+  date_from: '', date_to: '', faculty_id: '', nios_university_id: '',
+  year: '', nios_batch_id: '', nios_subject_id: '', class_mode: '', is_recorded: '',
+  class_status: '',
 };
+
+const YEAR_OPTIONS = Array.from({ length: 11 }, (_, i) => String(2020 + i));
 
 function calcHours(start, end) {
   if (!start || !end) return '';
@@ -43,23 +46,25 @@ function calcHours(start, end) {
   return (mins / 60).toFixed(2);
 }
 
-export default function ClassesPage() {
+export default function NIOSClassesPage() {
   const { isAdmin } = useAuth();
   const [searchParams] = useSearchParams();
+
   const [classes, setClasses] = useState([]);
   const [faculty, setFaculty] = useState([]);
-  const [subjects, setSubjects] = useState([]);
   const [universities, setUniversities] = useState([]);
-  const [streams, setStreams] = useState([]);
-  const [batches, setBatches] = useState([]);
-  const [filteredBatches, setFilteredBatches] = useState([]);
+  const [allBatches, setAllBatches] = useState([]);
+  const [allSubjects, setAllSubjects] = useState([]);
+
+  // Filter-level cascade
+  const [filterBatches, setFilterBatches] = useState([]);
+  const [filterSubjects, setFilterSubjects] = useState([]);
+
+  // Form-level cascade
   const [formBatches, setFormBatches] = useState([]);
-  const [formStreams, setFormStreams] = useState([]);
-  const [formSubjects, setFormSubjects] = useState([]);
-  const [formAcademicYears, setFormAcademicYears] = useState([]);
-  const [formSemesters, setFormSemesters] = useState([]);
-  const [formAcademicYearSubjects, setFormAcademicYearSubjects] = useState([]);
+  const [formBatchSubjects, setFormBatchSubjects] = useState([]); // [{id, nios_subject_id, subject_name}]
   const [formChapters, setFormChapters] = useState([]);
+
   const [filters, setFilters] = useState(emptyFilters);
   const [formOpen, setFormOpen] = useState(false);
   const [viewDialog, setViewDialog] = useState(null);
@@ -72,22 +77,18 @@ export default function ClassesPage() {
   const [chapterRecording, setChapterRecording] = useState(null);
 
   async function loadDropdowns() {
-    const [fRes, sRes, uRes, bRes, stRes] = await Promise.all([
+    const [fRes, uRes, bRes, sRes] = await Promise.all([
       client.get('/faculty'),
-      client.get('/subjects'),
-      client.get('/universities'),
-      client.get('/batches'),
-      client.get('/streams'),
+      client.get('/nios/universities'),
+      client.get('/nios/batches'),
+      client.get('/nios/subjects'),
     ]);
     setFaculty(fRes.data);
-    setSubjects(sRes.data);
     setUniversities(uRes.data);
-    setBatches(bRes.data);
-    setStreams(stRes.data);
-    setFilteredBatches(bRes.data);
-    setFormBatches(bRes.data);
-    setFormStreams(stRes.data);
-    setFormSubjects(sRes.data);
+    setAllBatches(bRes.data);
+    setAllSubjects(sRes.data);
+    setFilterBatches(bRes.data);
+    setFilterSubjects(sRes.data);
   }
 
   async function loadClasses(params = filters) {
@@ -95,10 +96,10 @@ export default function ClassesPage() {
     try {
       const query = new URLSearchParams();
       Object.entries(params).forEach(([k, v]) => { if (v !== '') query.set(k, v); });
-      const res = await client.get(`/classes?${query}`);
+      const res = await client.get(`/nios/classes?${query}`);
       setClasses(res.data);
     } catch {
-      toast.error('Failed to load classes.');
+      toast.error('Failed to load NIOS classes.');
     } finally {
       setLoading(false);
     }
@@ -112,72 +113,76 @@ export default function ClassesPage() {
     loadClasses(initialFilters);
   }, []);
 
+  // ── Filter cascade ──────────────────────────────────────────────────────────
+
   function handleFilterUniChange(v) {
-    setFilters({ ...filters, university_id: v, batch_id: '' });
-    setFilteredBatches(v ? batches.filter((b) => String(b.university_id) === v) : batches);
+    setFilters({ ...filters, nios_university_id: v, year: '', nios_batch_id: '', nios_subject_id: '' });
+    setFilterBatches(v ? allBatches.filter((b) => String(b.nios_university_id) === v) : allBatches);
+    setFilterSubjects(allSubjects);
   }
 
-  function handleFormUniChange(v) {
-    setForm({ ...form, university_id: v, stream_id: '', batch_id: '', academic_year_id: '', semester_id: '', subject_id: '', chapter_id: '' });
-    setFormStreams(v ? streams.filter((s) => String(s.university_id) === v) : streams);
-    setFormBatches(v ? batches.filter((b) => String(b.university_id) === v) : batches);
-    setFormAcademicYears([]); setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
+  function handleFilterYearChange(v) {
+    setFilters({ ...filters, year: v, nios_batch_id: '', nios_subject_id: '' });
+    const base = filters.nios_university_id
+      ? allBatches.filter((b) => String(b.nios_university_id) === filters.nios_university_id)
+      : allBatches;
+    setFilterBatches(v ? base.filter((b) => b.year === v) : base);
+    setFilterSubjects(allSubjects);
   }
 
-  function handleFormStreamChange(v) {
-    setForm({ ...form, stream_id: v, batch_id: '', academic_year_id: '', semester_id: '', subject_id: '', chapter_id: '' });
-    setFormBatches(v ? batches.filter((b) => String(b.stream_id) === v) : batches.filter((b) => String(b.university_id) === form.university_id));
-    setFormAcademicYears([]); setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
-  }
-
-  async function handleFormBatchChange(v) {
-    setForm((f) => ({ ...f, batch_id: v, academic_year_id: '', semester_id: '', subject_id: '', chapter_id: '' }));
-    setFormAcademicYears([]); setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
+  async function handleFilterBatchChange(v) {
+    setFilters({ ...filters, nios_batch_id: v, nios_subject_id: '' });
     if (v) {
-      try { const res = await client.get(`/academic-years?batch_id=${v}`); setFormAcademicYears(res.data); } catch { /**/ }
+      try {
+        const res = await client.get('/nios/batch-subjects', { params: { nios_batch_id: v } });
+        setFilterSubjects(res.data.map((bs) => ({ id: bs.nios_subject_id, name: bs.subject_name })));
+      } catch { setFilterSubjects(allSubjects); }
+    } else {
+      setFilterSubjects(allSubjects);
     }
   }
 
-  async function handleFormYearChange(v) {
-    setForm((f) => ({ ...f, academic_year_id: v, semester_id: '', subject_id: '', chapter_id: '' }));
-    setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
+  // ── Form cascade ──────────────────────────────────────────────────────────
+
+  function handleFormUniChange(v) {
+    setForm({ ...form, nios_university_id: v, nios_batch_id: '', nios_subject_id: '', nios_chapter_id: '' });
+    setFormBatches(v ? allBatches.filter((b) => String(b.nios_university_id) === v) : allBatches);
+    setFormBatchSubjects([]);
+    setFormChapters([]);
+  }
+
+  async function handleFormBatchChange(v) {
+    setForm((f) => ({ ...f, nios_batch_id: v, nios_subject_id: '', nios_chapter_id: '' }));
+    setFormBatchSubjects([]);
+    setFormChapters([]);
     if (v) {
       try {
-        const [semRes, subRes] = await Promise.all([
-          client.get(`/semesters?academic_year_id=${v}`),
-          client.get(`/academic-year-subjects?academic_year_id=${v}`),
-        ]);
-        setFormSemesters(semRes.data);
-        if (semRes.data.length === 0) setFormAcademicYearSubjects(subRes.data);
+        const res = await client.get('/nios/batch-subjects', { params: { nios_batch_id: v } });
+        setFormBatchSubjects(res.data);
       } catch { /**/ }
     }
   }
 
-  async function handleFormSemesterChange(v) {
-    setForm((f) => ({ ...f, semester_id: v, subject_id: '', chapter_id: '' }));
-    setFormAcademicYearSubjects([]); setFormChapters([]);
-    if (v) {
-      try { const res = await client.get(`/academic-year-subjects?semester_id=${v}`); setFormAcademicYearSubjects(res.data); } catch { /**/ }
-    }
-  }
-
   async function handleFormSubjectChange(subjectId) {
-    setForm((f) => ({ ...f, subject_id: subjectId, chapter_id: '' }));
+    setForm((f) => ({ ...f, nios_subject_id: subjectId, nios_chapter_id: '' }));
     setFormChapters([]);
     if (!subjectId) return;
-    const ays = formAcademicYearSubjects.find((s) => String(s.subject_id) === subjectId);
-    if (ays) {
-      try { const res = await client.get(`/chapters?academic_year_subject_id=${ays.id}`); setFormChapters(res.data); } catch { /**/ }
+    const bs = formBatchSubjects.find((s) => String(s.nios_subject_id) === subjectId);
+    if (bs) {
+      try {
+        const res = await client.get('/nios/chapters', { params: { nios_batch_subject_id: bs.id } });
+        setFormChapters(res.data);
+      } catch { /**/ }
     }
   }
 
   async function handleFormChapterChange(v) {
-    if (editing) { setForm((f) => ({ ...f, chapter_id: v })); return; }
-    setForm((f) => ({ ...f, chapter_id: v }));
+    if (editing) { setForm((f) => ({ ...f, nios_chapter_id: v })); return; }
+    setForm((f) => ({ ...f, nios_chapter_id: v }));
     setChapterRecording(null);
     if (!v) return;
     try {
-      const res = await client.get('/classes', { params: { chapter_id: v, is_recorded: 'true' } });
+      const res = await client.get('/nios/classes', { params: { nios_chapter_id: v, is_recorded: 'true' } });
       if (res.data.length > 0) setChapterRecording(res.data[0]);
     } catch { /* non-critical */ }
   }
@@ -195,9 +200,9 @@ export default function ClassesPage() {
     setEditing(null);
     setForm(emptyForm);
     setChapterRecording(null);
-    setFormStreams(streams);
-    setFormBatches(batches);
-    setFormAcademicYears([]); setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
+    setFormBatches(allBatches);
+    setFormBatchSubjects([]);
+    setFormChapters([]);
     setFormOpen(true);
   }
 
@@ -209,13 +214,10 @@ export default function ClassesPage() {
       end_time: c.end_time || '',
       total_hours: c.total_hours || '',
       faculty_id: c.faculty_id ? String(c.faculty_id) : '',
-      subject_id: c.subject_id ? String(c.subject_id) : '',
-      university_id: c.university_id ? String(c.university_id) : '',
-      stream_id: c.stream_id ? String(c.stream_id) : '',
-      batch_id: c.batch_id ? String(c.batch_id) : '',
-      academic_year_id: c.academic_year_id ? String(c.academic_year_id) : '',
-      semester_id: c.semester_id ? String(c.semester_id) : '',
-      chapter_id: c.chapter_id ? String(c.chapter_id) : '',
+      nios_university_id: c.nios_university_id ? String(c.nios_university_id) : '',
+      nios_batch_id: c.nios_batch_id ? String(c.nios_batch_id) : '',
+      nios_subject_id: c.nios_subject_id ? String(c.nios_subject_id) : '',
+      nios_chapter_id: c.nios_chapter_id ? String(c.nios_chapter_id) : '',
       class_status: c.class_status || 'scheduled',
       unit_chapter: c.unit_chapter || '',
       class_mode: c.class_mode || '',
@@ -241,35 +243,20 @@ export default function ClassesPage() {
     });
 
     setChapterRecording(null);
-    setFormStreams(c.university_id ? streams.filter((s) => String(s.university_id) === String(c.university_id)) : streams);
-    setFormBatches(
-      c.stream_id ? batches.filter((b) => String(b.stream_id) === String(c.stream_id))
-      : c.university_id ? batches.filter((b) => String(b.university_id) === String(c.university_id))
-      : batches
-    );
-    setFormAcademicYears([]); setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
+    setFormBatches(c.nios_university_id ? allBatches.filter((b) => String(b.nios_university_id) === String(c.nios_university_id)) : allBatches);
+    setFormBatchSubjects([]);
+    setFormChapters([]);
 
-    if (c.batch_id) {
+    if (c.nios_batch_id) {
       try {
-        const ayRes = await client.get(`/academic-years?batch_id=${c.batch_id}`);
-        setFormAcademicYears(ayRes.data);
+        const bsRes = await client.get('/nios/batch-subjects', { params: { nios_batch_id: c.nios_batch_id } });
+        setFormBatchSubjects(bsRes.data);
 
-        if (c.academic_year_id) {
-          const [semRes, subRes] = await Promise.all([
-            client.get(`/semesters?academic_year_id=${c.academic_year_id}`),
-            c.semester_id
-              ? client.get(`/academic-year-subjects?semester_id=${c.semester_id}`)
-              : client.get(`/academic-year-subjects?academic_year_id=${c.academic_year_id}`),
-          ]);
-          setFormSemesters(semRes.data);
-          setFormAcademicYearSubjects(subRes.data);
-
-          if (c.subject_id) {
-            const ays = subRes.data.find((s) => String(s.subject_id) === String(c.subject_id));
-            if (ays) {
-              const chapRes = await client.get(`/chapters?academic_year_subject_id=${ays.id}`);
-              setFormChapters(chapRes.data);
-            }
+        if (c.nios_subject_id) {
+          const bs = bsRes.data.find((s) => String(s.nios_subject_id) === String(c.nios_subject_id));
+          if (bs) {
+            const chapRes = await client.get('/nios/chapters', { params: { nios_batch_subject_id: bs.id } });
+            setFormChapters(chapRes.data);
           }
         }
       } catch { /**/ }
@@ -280,7 +267,7 @@ export default function ClassesPage() {
 
   async function quickSetStatus(c, status) {
     try {
-      await client.put(`/classes/${c.id}`, { ...c, date: c.date?.slice(0, 10), class_status: status });
+      await client.put(`/nios/classes/${c.id}`, { ...c, date: c.date?.slice(0, 10), class_status: status });
       toast.success('Status updated.');
       loadClasses();
     } catch (err) {
@@ -290,34 +277,24 @@ export default function ClassesPage() {
 
   async function handleSubmit(e) {
     e.preventDefault();
-
-    // Native `required` covers the <input> fields; the Radix <Select>s need a
-    // manual check since they don't participate in HTML form validation.
     const requiredSelects = [
       ['faculty_id', 'Faculty'],
-      ['university_id', 'University'],
-      ['stream_id', 'Stream'],
-      ['batch_id', 'Batch'],
-      ['academic_year_id', 'Academic Year'],
-      ['subject_id', 'Subject'],
-      ['chapter_id', 'Chapter'],
+      ['nios_university_id', 'University'],
+      ['nios_batch_id', 'Batch'],
+      ['nios_subject_id', 'Subject'],
+      ['nios_chapter_id', 'Chapter'],
       ['class_mode', 'Class Mode'],
     ];
     const missing = requiredSelects.filter(([key]) => !form[key]).map(([, label]) => label);
-    if (formSemesters.length > 0 && !form.semester_id) missing.push('Semester');
-    if (missing.length) {
-      toast.error(`Please select: ${missing.join(', ')}.`);
-      return;
-    }
+    if (missing.length) { toast.error(`Please select: ${missing.join(', ')}.`); return; }
 
     setSaving(true);
     try {
-      const payload = { ...form };
       if (editing) {
-        await client.put(`/classes/${editing.id}`, payload);
+        await client.put(`/nios/classes/${editing.id}`, form);
         toast.success('Class updated.');
       } else {
-        await client.post('/classes', payload);
+        await client.post('/nios/classes', form);
         toast.success('Class added.');
       }
       setFormOpen(false);
@@ -335,7 +312,7 @@ export default function ClassesPage() {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      await client.delete(`/classes/${deleteTarget.id}`);
+      await client.delete(`/nios/classes/${deleteTarget.id}`);
       toast.success('Class deleted.');
       setDeleteTarget(null);
       loadClasses();
@@ -350,7 +327,7 @@ export default function ClassesPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Classes</h1>
+      <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">NIOS Classes</h1>
 
       {/* Filter Bar */}
       <Card>
@@ -368,36 +345,37 @@ export default function ClassesPage() {
               <Label>Faculty</Label>
               <Select value={filters.faculty_id} onValueChange={(v) => setFilters({ ...filters, faculty_id: v })}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
-                <SelectContent>
-                  {faculty.map((f) => <SelectItem key={f.id} value={String(f.id)}>{f.name}</SelectItem>)}
-                </SelectContent>
+                <SelectContent>{faculty.map((f) => <SelectItem key={f.id} value={String(f.id)}>{f.name}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div className="space-y-1">
               <Label>University</Label>
-              <Select value={filters.university_id} onValueChange={handleFilterUniChange}>
+              <Select value={filters.nios_university_id} onValueChange={handleFilterUniChange}>
+                <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
+                <SelectContent>{universities.map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label>Year</Label>
+              <Select value={filters.year} onValueChange={handleFilterYearChange}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
                 <SelectContent>
-                  {universities.map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
+                  {YEAR_OPTIONS.map((y) => <SelectItem key={y} value={y}>{y}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-1">
               <Label>Batch</Label>
-              <Select value={filters.batch_id} onValueChange={(v) => setFilters({ ...filters, batch_id: v })}>
+              <Select value={filters.nios_batch_id} onValueChange={handleFilterBatchChange}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
-                <SelectContent>
-                  {filteredBatches.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.name}</SelectItem>)}
-                </SelectContent>
+                <SelectContent>{filterBatches.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.name}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div className="space-y-1">
               <Label>Subject</Label>
-              <Select value={filters.subject_id} onValueChange={(v) => setFilters({ ...filters, subject_id: v })}>
+              <Select value={filters.nios_subject_id} onValueChange={(v) => setFilters({ ...filters, nios_subject_id: v })}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
-                <SelectContent>
-                  {subjects.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
-                </SelectContent>
+                <SelectContent>{filterSubjects.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}</SelectContent>
               </Select>
             </div>
             <div className="space-y-1">
@@ -434,7 +412,13 @@ export default function ClassesPage() {
           </div>
           <div className="flex gap-2 mt-3">
             <Button size="sm" onClick={() => loadClasses()} disabled={loading}>{loading ? 'Searching...' : 'Search'}</Button>
-            <Button size="sm" variant="outline" onClick={() => { setFilters(emptyFilters); setFilteredBatches(batches); loadClasses(emptyFilters); }}>Clear</Button>
+            <Button size="sm" variant="outline" onClick={() => {
+              const cleared = { ...emptyFilters };
+              setFilters(cleared);
+              setFilterBatches(allBatches);
+              setFilterSubjects(allSubjects);
+              loadClasses(cleared);
+            }}>Clear</Button>
           </div>
         </CardContent>
       </Card>
@@ -468,22 +452,16 @@ export default function ClassesPage() {
                 </TableRow>
               )}
               {classes.map((c) => (
-                <TableRow
-                  key={c.id}
-                  className={c.class_status === 'taken' ? 'bg-green-100 hover:bg-green-200/70 dark:bg-green-900/30 dark:hover:bg-green-900/40' : ''}
-                >
+                <TableRow key={c.id}
+                  className={c.class_status === 'taken' ? 'bg-green-100 hover:bg-green-200/70 dark:bg-green-900/30 dark:hover:bg-green-900/40' : ''}>
                   <TableCell className="text-slate-900 dark:text-slate-100">{c.date?.slice(0, 10)}</TableCell>
                   <TableCell>{c.faculty_name || '—'}</TableCell>
                   <TableCell>{c.subject_name || '—'}</TableCell>
                   <TableCell>{c.university_name || '—'}</TableCell>
                   <TableCell>{c.batch_name || '—'}</TableCell>
                   <TableCell>{c.total_hours || '—'}</TableCell>
-                  <TableCell>
-                    {c.class_mode ? <StatusBadge status={c.class_mode} /> : '—'}
-                  </TableCell>
-                  <TableCell>
-                    <StatusBadge status={c.is_recorded ? 'recorded' : 'not_recorded'} />
-                  </TableCell>
+                  <TableCell>{c.class_mode ? <StatusBadge status={c.class_mode} /> : '—'}</TableCell>
+                  <TableCell><StatusBadge status={c.is_recorded ? 'recorded' : 'not_recorded'} /></TableCell>
                   <TableCell>
                     <Select value={c.class_status || 'scheduled'} onValueChange={(v) => quickSetStatus(c, v)}>
                       <SelectTrigger className="h-7 w-32 text-xs"><SelectValue /></SelectTrigger>
@@ -498,12 +476,9 @@ export default function ClassesPage() {
                     <Button size="sm" variant="outline" onClick={() => setViewDialog(c)}>View</Button>
                     <Button size="sm" variant="outline" onClick={() => openEdit(c)}>Edit</Button>
                     {isAdmin() && (
-                      <Button
-                        size="sm"
-                        variant="outline"
+                      <Button size="sm" variant="outline"
                         className="text-red-600 dark:text-red-400 border-red-300 dark:border-red-700 hover:bg-red-50 dark:hover:bg-red-900"
-                        onClick={() => setDeleteTarget(c)}
-                      >
+                        onClick={() => setDeleteTarget(c)}>
                         Delete
                       </Button>
                     )}
@@ -518,7 +493,7 @@ export default function ClassesPage() {
       {/* View Dialog */}
       <Dialog open={!!viewDialog} onOpenChange={() => setViewDialog(null)}>
         <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>Class Details</DialogTitle></DialogHeader>
+          <DialogHeader><DialogTitle>NIOS Class Details</DialogTitle></DialogHeader>
           {viewDialog && (
             <div className="space-y-2 text-sm">
               {[
@@ -526,8 +501,8 @@ export default function ClassesPage() {
                 ['Faculty', viewDialog.faculty_name],
                 ['Subject', viewDialog.subject_name],
                 ['University', viewDialog.university_name],
-                ['Stream', viewDialog.stream_name],
                 ['Batch', viewDialog.batch_name],
+                ['Chapter', viewDialog.chapter_title],
                 ['Status', viewDialog.class_status],
                 ['Start Time', viewDialog.start_time],
                 ['End Time', viewDialog.end_time],
@@ -568,11 +543,7 @@ export default function ClassesPage() {
           </p>
           <div className="flex justify-end gap-2 mt-2">
             <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={deleting}>Cancel</Button>
-            <Button
-              className="bg-red-600 hover:bg-red-700 text-white"
-              onClick={handleDelete}
-              disabled={deleting}
-            >
+            <Button className="bg-red-600 hover:bg-red-700 text-white" onClick={handleDelete} disabled={deleting}>
               {deleting ? 'Deleting...' : 'Delete'}
             </Button>
           </div>
@@ -583,7 +554,7 @@ export default function ClassesPage() {
       <Dialog open={formOpen} onOpenChange={setFormOpen}>
         <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>{editing ? 'Edit Class' : 'Add Class'}</DialogTitle>
+            <DialogTitle>{editing ? 'Edit NIOS Class' : 'Add NIOS Class'}</DialogTitle>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="mt-4 space-y-5 pb-2">
 
@@ -615,51 +586,30 @@ export default function ClassesPage() {
                 </div>
                 <div className="space-y-1">
                   <Label>University *</Label>
-                  <Select value={form.university_id} onValueChange={handleFormUniChange}>
+                  <Select value={form.nios_university_id} onValueChange={handleFormUniChange}>
                     <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
                     <SelectContent>{universities.map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-1">
-                  <Label>Stream *</Label>
-                  <Select value={form.stream_id} onValueChange={handleFormStreamChange} disabled={!form.university_id}>
-                    <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
-                    <SelectContent>{formStreams.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}</SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-1">
                   <Label>Batch *</Label>
-                  <Select value={form.batch_id} onValueChange={handleFormBatchChange} disabled={!form.stream_id}>
+                  <Select value={form.nios_batch_id} onValueChange={handleFormBatchChange} disabled={!form.nios_university_id}>
                     <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
                     <SelectContent>{formBatches.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.name}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-1">
-                  <Label>Academic Year *</Label>
-                  <Select value={form.academic_year_id} onValueChange={handleFormYearChange} disabled={!form.batch_id}>
-                    <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
-                    <SelectContent>{formAcademicYears.map((ay) => <SelectItem key={ay.id} value={String(ay.id)}>{ay.name}</SelectItem>)}</SelectContent>
-                  </Select>
-                </div>
-                {formSemesters.length > 0 && (
-                  <div className="space-y-1">
-                    <Label>Semester *</Label>
-                    <Select value={form.semester_id} onValueChange={handleFormSemesterChange} disabled={!form.academic_year_id}>
-                      <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
-                      <SelectContent>{formSemesters.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}</SelectContent>
-                    </Select>
-                  </div>
-                )}
-                <div className="space-y-1">
                   <Label>Subject *</Label>
-                  <Select value={form.subject_id} onValueChange={handleFormSubjectChange} disabled={!form.academic_year_id || (formSemesters.length > 0 && !form.semester_id)}>
+                  <Select value={form.nios_subject_id} onValueChange={handleFormSubjectChange} disabled={!form.nios_batch_id}>
                     <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
-                    <SelectContent>{formAcademicYearSubjects.map((s) => <SelectItem key={s.subject_id} value={String(s.subject_id)}>{s.subject_name}</SelectItem>)}</SelectContent>
+                    <SelectContent>
+                      {formBatchSubjects.map((s) => <SelectItem key={s.nios_subject_id} value={String(s.nios_subject_id)}>{s.subject_name}</SelectItem>)}
+                    </SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-1">
                   <Label>Chapter *</Label>
-                  <Select value={form.chapter_id} onValueChange={handleFormChapterChange} disabled={!form.subject_id}>
+                  <Select value={form.nios_chapter_id} onValueChange={handleFormChapterChange} disabled={!form.nios_subject_id}>
                     <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
                     <SelectContent>{formChapters.map((ch) => <SelectItem key={ch.id} value={String(ch.id)}>{ch.title}</SelectItem>)}</SelectContent>
                   </Select>

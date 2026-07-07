@@ -56,6 +56,21 @@ async function syncClassForSlot(slot, timetable, userId) {
   `;
 }
 
+async function slotContext(row, timetableId) {
+  const rows = await sql`
+    SELECT
+      (SELECT name FROM faculty WHERE id = ${row.faculty_id}) AS faculty_name,
+      (SELECT name FROM subjects WHERE id = ${row.subject_id}) AS subject_name,
+      (SELECT name FROM timetables WHERE id = ${timetableId}) AS timetable_name
+  `;
+  return rows[0];
+}
+
+function slotDetail(row, ctx) {
+  const time = row.start_time && row.end_time ? ` ${row.start_time.slice(0, 5)}-${row.end_time.slice(0, 5)}` : '';
+  return `${ctx.subject_name || 'Subject N/A'} with ${ctx.faculty_name || 'Faculty N/A'} on ${row.day_of_week}${time} — ${ctx.timetable_name || 'timetable N/A'}`;
+}
+
 router.get('/', auth, async (req, res, next) => {
   try {
     const { batch_id, academic_year_id, semester_id } = req.query;
@@ -120,7 +135,13 @@ router.post('/', auth, async (req, res, next) => {
               ${academic_year_id || null}, ${semester_id || null}, ${req.user.id})
       RETURNING *
     `;
-    await logActivity(req.user.id, req.user.name, req.user.role, 'create_timetable', 'timetable', rows[0].id, `Created timetable: ${name}`);
+    const placeCtx = await sql`
+      SELECT
+        (SELECT name FROM universities WHERE id = ${university_id || null}) AS university_name,
+        (SELECT name FROM batches WHERE id = ${batch_id || null}) AS batch_name
+    `;
+    await logActivity(req.user.id, req.user.name, req.user.role, 'create_timetable', 'timetable', rows[0].id,
+      `Created timetable: ${name}${placeCtx[0].batch_name ? ` for ${placeCtx[0].batch_name}` : ''}${placeCtx[0].university_name ? ` (${placeCtx[0].university_name})` : ''}`);
     res.status(201).json(rows[0]);
   } catch (err) { next(err); }
 });
@@ -183,7 +204,8 @@ router.post('/:id/slots', auth, async (req, res, next) => {
     if (rows[0].class_taken_status !== 'not_taken') {
       await syncClassForSlot(rows[0], tt[0], req.user.id);
     }
-    await logActivity(req.user.id, req.user.name, req.user.role, 'add_slot', 'timetable_slot', rows[0].id, `Added slot on ${day_of_week}`);
+    const addCtx = await slotContext(rows[0], req.params.id);
+    await logActivity(req.user.id, req.user.name, req.user.role, 'add_slot', 'timetable_slot', rows[0].id, `Added slot: ${slotDetail(rows[0], addCtx)}`);
     res.status(201).json(rows[0]);
   } catch (err) { next(err); }
 });
@@ -228,7 +250,9 @@ router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
       const tt = await sql`SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date FROM timetables WHERE id = ${req.params.id}`;
       await syncClassForSlot(rows[0], tt[0], req.user.id);
     }
-    await logActivity(req.user.id, req.user.name, req.user.role, 'update_slot', 'timetable_slot', rows[0].id, `Updated slot status: ${rows[0].class_taken_status}`);
+    const updCtx = await slotContext(rows[0], req.params.id);
+    await logActivity(req.user.id, req.user.name, req.user.role, 'update_slot', 'timetable_slot', rows[0].id,
+      `Updated slot (status: ${rows[0].class_taken_status}): ${slotDetail(rows[0], updCtx)}`);
     res.json(rows[0]);
   } catch (err) { next(err); }
 });
@@ -239,7 +263,8 @@ router.delete('/:id/slots/:slotId', auth, async (req, res, next) => {
       DELETE FROM timetable_slots WHERE id = ${req.params.slotId} AND timetable_id = ${req.params.id} RETURNING *
     `;
     if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
-    await logActivity(req.user.id, req.user.name, req.user.role, 'delete_slot', 'timetable_slot', rows[0].id, `Deleted slot`);
+    const delCtx = await slotContext(rows[0], req.params.id);
+    await logActivity(req.user.id, req.user.name, req.user.role, 'delete_slot', 'timetable_slot', rows[0].id, `Deleted slot: ${slotDetail(rows[0], delCtx)}`);
     res.json({ message: 'Deleted.' });
   } catch (err) { next(err); }
 });

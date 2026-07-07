@@ -3,10 +3,11 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faGauge, faChalkboardUser, faCalendarDays, faUserTie, faChartBar, faGraduationCap,
-  faClipboardList,
+  faClipboardList, faVideo,
   faUniversity, faCodeBranch, faLayerGroup, faBook,
   faUsers, faClockRotateLeft,
   faArrowRightFromBracket, faBarsStaggered, faChevronLeft,
+  faBookOpen, faTableCells,
 } from '@fortawesome/free-solid-svg-icons';
 import { useAuth } from '@/context/AuthContext';
 import ThemeToggle from '@/components/ThemeToggle';
@@ -20,7 +21,8 @@ const NAV_MAIN = [
   { to: '/faculty',    label: 'Faculty',    icon: faUserTie, adminOnly: true },
   { to: '/reports',    label: 'Reports',    icon: faChartBar },
   { to: '/curriculum',      label: 'Curriculum',     icon: faGraduationCap },
-  { to: '/class-overview', label: 'Class Overview', icon: faClipboardList },
+  { to: '/class-overview',       label: 'Class Overview',       icon: faClipboardList },
+  { to: '/recording-overview',  label: 'Recording Overview',   icon: faVideo },
 ];
 
 const NAV_SETTINGS = [
@@ -33,6 +35,13 @@ const NAV_SETTINGS = [
 const NAV_ADMIN = [
   { to: '/users',        label: 'Users',        icon: faUsers },
   { to: '/activity-log', label: 'Activity Log', icon: faClockRotateLeft },
+];
+
+const NAV_NIOS = [
+  { to: '/nios/curriculum',         label: 'NIOS Curriculum',         icon: faBookOpen },
+  { to: '/nios/classes',            label: 'NIOS Classes',            icon: faChalkboardUser },
+  { to: '/nios/timetable',          label: 'NIOS Timetable',          icon: faTableCells },
+  { to: '/nios/recording-overview', label: 'NIOS Recording Overview', icon: faVideo },
 ];
 
 // ── Sub-components ───────────────────────────────────────────────────────────
@@ -143,6 +152,11 @@ export default function AppLayout({ children }) {
               <SidebarLink key={item.to} {...item} collapsed={collapsed} />
             )
           )}
+
+          <NavGroup label="NIOS" collapsed={collapsed} />
+          {NAV_NIOS.map((item) => (
+            <SidebarLink key={item.to} {...item} collapsed={collapsed} />
+          ))}
 
           {isAdmin() && (
             <>

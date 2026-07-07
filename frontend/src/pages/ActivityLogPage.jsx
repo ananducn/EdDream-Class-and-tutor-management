@@ -131,11 +131,11 @@ export default function ActivityLogPage() {
                   {logs.map((log) => (
                     <TableRow key={log.id}>
                       <TableCell className="whitespace-nowrap text-xs text-slate-500 dark:text-slate-400">{formatTs(log.created_at)}</TableCell>
-                      <TableCell className="font-medium text-slate-900 dark:text-slate-100">{log.user_name || '—'}</TableCell>
-                      <TableCell className="capitalize text-slate-600 dark:text-slate-300">{log.user_role || '—'}</TableCell>
-                      <TableCell>{log.action?.replace(/_/g, ' ')}</TableCell>
-                      <TableCell>{log.record_type || '—'}</TableCell>
-                      <TableCell className="text-slate-500 dark:text-slate-400 text-xs">{log.details || '—'}</TableCell>
+                      <TableCell className="font-medium text-slate-900 dark:text-slate-100 whitespace-nowrap">{log.user_name || '—'}</TableCell>
+                      <TableCell className="capitalize text-slate-600 dark:text-slate-300 whitespace-nowrap">{log.user_role || '—'}</TableCell>
+                      <TableCell className="capitalize whitespace-nowrap">{log.action?.replace(/_/g, ' ')}</TableCell>
+                      <TableCell className="capitalize whitespace-nowrap">{log.record_type?.replace(/_/g, ' ') || '—'}</TableCell>
+                      <TableCell className="text-slate-600 dark:text-slate-300 text-xs whitespace-normal min-w-[20rem] max-w-xl">{log.details || '—'}</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

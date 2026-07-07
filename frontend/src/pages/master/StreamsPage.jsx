@@ -8,12 +8,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import StatusBadge from '@/components/StatusBadge';
+import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
 
 const emptyForm = { name: '', university_id: '' };
 const emptyFilters = { search: '', university_id: '', status: '' };
 
 export default function StreamsPage() {
+  const confirm = useConfirm();
   const [streams, setStreams] = useState([]);
   const [universities, setUniversities] = useState([]);
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -78,6 +80,13 @@ export default function StreamsPage() {
   }
 
   async function handleDeactivate(s) {
+    const ok = await confirm({
+      title: 'Deactivate stream?',
+      description: `Are you sure you want to deactivate "${s.name}"?`,
+      confirmLabel: 'Deactivate',
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await client.delete(`/streams/${s.id}`);
       toast.success(`${s.name} deactivated.`);

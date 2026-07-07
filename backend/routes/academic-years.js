@@ -45,6 +45,11 @@ router.get('/:id', auth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+async function batchName(id) {
+  const rows = await sql`SELECT name FROM batches WHERE id = ${id}`;
+  return rows[0]?.name ?? null;
+}
+
 router.post('/', auth, async (req, res, next) => {
   try {
     const { batch_id, name, year_order } = req.body;
@@ -54,7 +59,9 @@ router.post('/', auth, async (req, res, next) => {
       VALUES (${batch_id}, ${name}, ${year_order || 1})
       RETURNING *
     `;
-    await logActivity(req.user.id, req.user.name, req.user.role, 'create_academic_year', 'academic_year', rows[0].id, `Created academic year: ${name}`);
+    const bName = await batchName(batch_id);
+    await logActivity(req.user.id, req.user.name, req.user.role, 'create_academic_year', 'academic_year', rows[0].id,
+      `Created academic year: ${name} for batch ${bName || 'N/A'}`);
     res.status(201).json(rows[0]);
   } catch (err) { next(err); }
 });
@@ -68,7 +75,9 @@ router.put('/:id', auth, async (req, res, next) => {
       WHERE id = ${req.params.id} RETURNING *
     `;
     if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
-    await logActivity(req.user.id, req.user.name, req.user.role, 'update_academic_year', 'academic_year', rows[0].id, `Updated academic year: ${name}`);
+    const bName = await batchName(rows[0].batch_id);
+    await logActivity(req.user.id, req.user.name, req.user.role, 'update_academic_year', 'academic_year', rows[0].id,
+      `Updated academic year: ${name} for batch ${bName || 'N/A'}`);
     res.json(rows[0]);
   } catch (err) { next(err); }
 });
@@ -77,7 +86,9 @@ router.delete('/:id', auth, async (req, res, next) => {
   try {
     const rows = await sql`UPDATE academic_years SET is_active = false WHERE id = ${req.params.id} RETURNING *`;
     if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
-    await logActivity(req.user.id, req.user.name, req.user.role, 'deactivate_academic_year', 'academic_year', rows[0].id, `Deactivated academic year: ${rows[0].name}`);
+    const bName = await batchName(rows[0].batch_id);
+    await logActivity(req.user.id, req.user.name, req.user.role, 'deactivate_academic_year', 'academic_year', rows[0].id,
+      `Deactivated academic year: ${rows[0].name} for batch ${bName || 'N/A'}`);
     res.json(rows[0]);
   } catch (err) { next(err); }
 });
@@ -86,7 +97,9 @@ router.patch('/:id/activate', auth, async (req, res, next) => {
   try {
     const rows = await sql`UPDATE academic_years SET is_active = true WHERE id = ${req.params.id} RETURNING *`;
     if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
-    await logActivity(req.user.id, req.user.name, req.user.role, 'activate_academic_year', 'academic_year', rows[0].id, `Activated academic year: ${rows[0].name}`);
+    const bName = await batchName(rows[0].batch_id);
+    await logActivity(req.user.id, req.user.name, req.user.role, 'activate_academic_year', 'academic_year', rows[0].id,
+      `Activated academic year: ${rows[0].name} for batch ${bName || 'N/A'}`);
     res.json(rows[0]);
   } catch (err) { next(err); }
 });

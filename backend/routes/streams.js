@@ -30,15 +30,21 @@ router.get('/', auth, async (req, res) => {
   res.json(rows);
 });
 
+async function universityName(id) {
+  const rows = await sql`SELECT name FROM universities WHERE id = ${id}`;
+  return rows[0]?.name ?? null;
+}
+
 router.post('/', auth, async (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden.' });
   const { name, university_id } = req.body;
   if (!name || !university_id) return res.status(400).json({ error: 'Name and university are required.' });
   const rows = await sql`
     INSERT INTO streams (name, university_id) VALUES (${name}, ${university_id})
     RETURNING *
   `;
-  await logActivity(req.user.id, req.user.name, req.user.role, 'create_stream', 'stream', rows[0].id, `Created stream: ${name}`);
+  const uniName = await universityName(university_id);
+  await logActivity(req.user.id, req.user.name, req.user.role, 'create_stream', 'stream', rows[0].id,
+    `Created stream: ${name} (${uniName || 'University N/A'})`);
   res.status(201).json(rows[0]);
 });
 
@@ -51,7 +57,9 @@ router.put('/:id', auth, async (req, res) => {
     WHERE id = ${req.params.id} RETURNING *
   `;
   if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
-  await logActivity(req.user.id, req.user.name, req.user.role, 'update_stream', 'stream', rows[0].id, `Updated stream: ${name}`);
+  const uniName = await universityName(university_id);
+  await logActivity(req.user.id, req.user.name, req.user.role, 'update_stream', 'stream', rows[0].id,
+    `Updated stream: ${name} (${uniName || 'University N/A'})`);
   res.json(rows[0]);
 });
 
@@ -61,7 +69,9 @@ router.delete('/:id', auth, async (req, res) => {
     UPDATE streams SET is_active = false WHERE id = ${req.params.id} RETURNING *
   `;
   if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
-  await logActivity(req.user.id, req.user.name, req.user.role, 'deactivate_stream', 'stream', rows[0].id, `Deactivated stream: ${rows[0].name}`);
+  const uniName = await universityName(rows[0].university_id);
+  await logActivity(req.user.id, req.user.name, req.user.role, 'deactivate_stream', 'stream', rows[0].id,
+    `Deactivated stream: ${rows[0].name} (${uniName || 'University N/A'})`);
   res.json({ message: 'Deactivated.' });
 });
 
@@ -71,7 +81,9 @@ router.patch('/:id/activate', auth, async (req, res) => {
     UPDATE streams SET is_active = true WHERE id = ${req.params.id} RETURNING *
   `;
   if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
-  await logActivity(req.user.id, req.user.name, req.user.role, 'activate_stream', 'stream', rows[0].id, `Activated stream: ${rows[0].name}`);
+  const uniName = await universityName(rows[0].university_id);
+  await logActivity(req.user.id, req.user.name, req.user.role, 'activate_stream', 'stream', rows[0].id,
+    `Activated stream: ${rows[0].name} (${uniName || 'University N/A'})`);
   res.json({ message: 'Activated.' });
 });
 

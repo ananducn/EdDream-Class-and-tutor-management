@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from '@/components/ui/sonner';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
+import { ConfirmProvider } from '@/context/ConfirmContext';
 import AppLayout from '@/components/AppLayout';
 import LoginPage from '@/pages/LoginPage';
 import ForgotPasswordPage from '@/pages/ForgotPasswordPage';
@@ -22,6 +23,13 @@ import UsersPage from '@/pages/UsersPage';
 import ActivityLogPage from '@/pages/ActivityLogPage';
 import CurriculumPage from '@/pages/CurriculumPage';
 import ClassOverviewPage from '@/pages/ClassOverviewPage';
+import RecordingOverviewPage from '@/pages/RecordingOverviewPage';
+import NIOSCurriculumPage from '@/pages/nios/NIOSCurriculumPage';
+import NIOSClassesPage from '@/pages/nios/NIOSClassesPage';
+import NIOSTimetablePage from '@/pages/nios/NIOSTimetablePage';
+import NIOSTimetableUniversityPage from '@/pages/nios/NIOSTimetableUniversityPage';
+import NIOSTimetableCalendarPage from '@/pages/nios/NIOSTimetableCalendarPage';
+import NIOSRecordingOverviewPage from '@/pages/nios/NIOSRecordingOverviewPage';
 
 function ProtectedRoute({ children, adminOnly = false }) {
   const { user, isLoading, isAdmin } = useAuth();
@@ -57,6 +65,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
+        <ConfirmProvider>
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
 
@@ -80,6 +89,14 @@ export default function App() {
           <Route path="/reports" element={<ProtectedRoute><ReportsPage /></ProtectedRoute>} />
           <Route path="/curriculum" element={<ProtectedRoute><CurriculumPage /></ProtectedRoute>} />
           <Route path="/class-overview" element={<ProtectedRoute><ClassOverviewPage /></ProtectedRoute>} />
+          <Route path="/recording-overview" element={<ProtectedRoute><RecordingOverviewPage /></ProtectedRoute>} />
+          <Route path="/nios/curriculum" element={<ProtectedRoute><NIOSCurriculumPage /></ProtectedRoute>} />
+          <Route path="/nios/classes" element={<ProtectedRoute><NIOSClassesPage /></ProtectedRoute>} />
+          <Route path="/nios/timetable" element={<ProtectedRoute><NIOSTimetablePage /></ProtectedRoute>} />
+          <Route path="/nios/timetable/:uniId" element={<ProtectedRoute><NIOSTimetableUniversityPage /></ProtectedRoute>} />
+          <Route path="/nios/timetable/:uniId/:batchId" element={<ProtectedRoute><NIOSTimetableCalendarPage /></ProtectedRoute>} />
+          <Route path="/nios/recording-overview" element={<ProtectedRoute><NIOSRecordingOverviewPage /></ProtectedRoute>} />
+
           <Route path="/users" element={<ProtectedRoute adminOnly><UsersPage /></ProtectedRoute>} />
           <Route path="/activity-log" element={<ProtectedRoute adminOnly><ActivityLogPage /></ProtectedRoute>} />
 
@@ -90,6 +107,7 @@ export default function App() {
           <Route path="/settings/subjects" element={<ProtectedRoute adminOnly><SubjectsPage /></ProtectedRoute>} />
         </Routes>
         <Toaster />
+        </ConfirmProvider>
       </AuthProvider>
     </BrowserRouter>
   );

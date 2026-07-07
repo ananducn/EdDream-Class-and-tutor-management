@@ -11,7 +11,6 @@ router.get('/summary', auth, async (req, res, next) => {
       onlineRows,
       offlineRows,
       pendingRecRows,
-      pendingEditRows,
       pendingUploadRows,
       facultyHoursRows,
       activityRows,
@@ -32,11 +31,7 @@ router.get('/summary', auth, async (req, res, next) => {
           AND DATE_TRUNC('month', date) = DATE_TRUNC('month', CURRENT_DATE)`,
 
       sql`SELECT COUNT(*) AS count FROM class_entries
-          WHERE is_recorded = true AND editing_status = 'not_edited'
-          AND DATE_TRUNC('month', date) = DATE_TRUNC('month', CURRENT_DATE)`,
-
-      sql`SELECT COUNT(*) AS count FROM class_entries
-          WHERE editing_status = 'edited'
+          WHERE is_recorded = true
           AND upload_student_app = false
           AND upload_youtube = false
           AND upload_gdrive = false
@@ -63,7 +58,6 @@ router.get('/summary', auth, async (req, res, next) => {
       online_this_month: Number(onlineRows[0].count),
       offline_this_month: Number(offlineRows[0].count),
       pending_recordings: Number(pendingRecRows[0].count),
-      pending_editing: Number(pendingEditRows[0].count),
       pending_uploads: Number(pendingUploadRows[0].count),
       faculty_hours: facultyHoursRows,
       recent_activity: activityRows,

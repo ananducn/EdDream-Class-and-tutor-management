@@ -14,7 +14,7 @@ const PAGE_SIZE = 50;
 const EMPTY_FILTERS = {
   university_id: '', stream_id: '', batch_id: '', academic_year_id: '', semester_id: '', subject_id: '',
   faculty_id: '', date_from: '', date_to: '',
-  class_status: '', is_recorded: '', editing_status: '', payment_status: '',
+  class_status: '', is_recorded: '',
 };
 
 function pct(num, den) {
@@ -152,7 +152,7 @@ export default function ClassOverviewPage() {
   function buildQueryString(f) {
     const q = new URLSearchParams();
     const simple = ['university_id','stream_id','batch_id','academic_year_id','semester_id','subject_id',
-                     'faculty_id','date_from','date_to','class_status','editing_status','payment_status'];
+                     'faculty_id','date_from','date_to','class_status'];
     simple.forEach(k => { if (f[k]) q.set(k, f[k]); });
     if (f.is_recorded !== '') q.set('is_recorded', f.is_recorded);
     return q.toString();
@@ -334,27 +334,6 @@ export default function ClassOverviewPage() {
               </Select>
             </div>
 
-            <div className="space-y-1">
-              <Label className="text-xs">Editing</Label>
-              <Select value={filters.editing_status} onValueChange={v => setFilters(f => ({ ...f, editing_status: v }))}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="edited">Edited</SelectItem>
-                  <SelectItem value="not_edited">Pending Edit</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <div className="space-y-1 sm:w-48">
-            <Label className="text-xs">Payment</Label>
-            <Select value={filters.payment_status} onValueChange={v => setFilters(f => ({ ...f, payment_status: v }))}>
-              <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="paid">Paid</SelectItem>
-                <SelectItem value="pending">Pending</SelectItem>
-              </SelectContent>
-            </Select>
           </div>
 
           <div className="flex items-center gap-2 pt-1">
@@ -396,7 +375,7 @@ export default function ClassOverviewPage() {
             />
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 gap-3">
             <StatCard
               label="Recorded"
               value={summary.recorded}
@@ -409,25 +388,12 @@ export default function ClassOverviewPage() {
               value={summary.not_recorded}
               color="red"
             />
-            <StatCard
-              label="Edited"
-              value={summary.edited}
-              sub={pct(summary.edited, summary.recorded)}
-              subLabel="of recorded"
-              color="purple"
-            />
-            <StatCard
-              label="Pending Edit"
-              value={summary.pending_edit}
-              sub={summary.pending_edit > 0 ? 'edit backlog' : 'all clear'}
-              color={summary.pending_edit > 0 ? 'amber' : 'green'}
-            />
           </div>
 
-          {/* Upload + payment strip */}
+          {/* Upload strip */}
           <Card>
             <CardContent className="pt-4">
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 text-center">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
                 {[
                   { key: 'upload_student_app', label: 'Student App' },
                   { key: 'upload_youtube',     label: 'YouTube' },
@@ -435,25 +401,14 @@ export default function ClassOverviewPage() {
                   { key: 'upload_harddisk',    label: 'Hard Disk' },
                 ].map(({ key, label }) => {
                   const count = summary[key];
-                  const base = summary.edited;
                   return (
                     <div key={key} className="space-y-0.5">
                       <p className="text-xs text-slate-500 dark:text-slate-400">{label}</p>
                       <p className="text-xl font-bold text-slate-900 dark:text-slate-100">{count}</p>
-                      <p className="text-xs text-slate-400">{pct(count, base) ?? '—'} of edited</p>
+                      <p className="text-xs text-slate-400">{pct(count, summary.recorded) ?? '—'} of recorded</p>
                     </div>
                   );
                 })}
-                <div className="space-y-0.5">
-                  <p className="text-xs text-slate-500 dark:text-slate-400">Paid</p>
-                  <p className="text-xl font-bold text-green-600 dark:text-green-400">{summary.payment_paid}</p>
-                  <p className="text-xs text-slate-400">{pct(summary.payment_paid, summary.total) ?? '—'} of total</p>
-                </div>
-                <div className="space-y-0.5">
-                  <p className="text-xs text-slate-500 dark:text-slate-400">Payment Pending</p>
-                  <p className="text-xl font-bold text-amber-600 dark:text-amber-400">{summary.payment_pending}</p>
-                  <p className="text-xs text-slate-400">{pct(summary.payment_pending, summary.total) ?? '—'} of total</p>
-                </div>
               </div>
             </CardContent>
           </Card>
@@ -488,9 +443,7 @@ export default function ClassOverviewPage() {
                         <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Hrs</TableHead>
                         <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Status</TableHead>
                         <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Rec</TableHead>
-                        <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Edit</TableHead>
                         <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Uploads</TableHead>
-                        <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Payment</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -518,26 +471,12 @@ export default function ClassOverviewPage() {
                             }
                           </TableCell>
                           <TableCell>
-                            {cls.editing_status === 'edited'
-                              ? <span className="inline-block text-xs font-medium px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300">Edited</span>
-                              : cls.is_recorded
-                                ? <span className="inline-block text-xs font-medium px-1.5 py-0.5 rounded bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-300">Pending</span>
-                                : <span className="text-slate-300 dark:text-slate-600">—</span>
-                            }
-                          </TableCell>
-                          <TableCell>
                             <div className="flex items-center gap-0.5">
                               <UploadDot active={cls.upload_student_app} label="SA" />
                               <UploadDot active={cls.upload_youtube}     label="YT" />
                               <UploadDot active={cls.upload_gdrive}      label="GD" />
                               <UploadDot active={cls.upload_harddisk}    label="HD" />
                             </div>
-                          </TableCell>
-                          <TableCell>
-                            {cls.payment_status === 'paid'
-                              ? <span className="inline-block text-xs font-medium px-1.5 py-0.5 rounded bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300">Paid</span>
-                              : <span className="inline-block text-xs font-medium px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300">Pending</span>
-                            }
                           </TableCell>
                         </TableRow>
                       ))}

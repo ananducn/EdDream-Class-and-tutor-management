@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
 
 const RESOURCE_TYPES = [
@@ -36,6 +37,7 @@ const PARAM_ORDER = ['uni', 'stream', 'batch', 'year', 'semester', 'subject', 'c
 
 export default function CurriculumPage() {
   const { isAdmin } = useAuth();
+  const confirm = useConfirm();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const uni      = searchParams.get('uni');
@@ -285,6 +287,15 @@ export default function CurriculumPage() {
   }
 
   async function handleDeactivate(item) {
+    const label = item.name || item.title || item.subject_name || 'this item';
+    const isRemove = level === 4 || level === 5;
+    const ok = await confirm({
+      title: isRemove ? 'Remove subject?' : 'Deactivate?',
+      description: `Are you sure you want to ${isRemove ? 'remove' : 'deactivate'} "${label}"?`,
+      confirmLabel: isRemove ? 'Remove' : 'Deactivate',
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       if (level === 3) await client.delete(`/academic-years/${item.id}`);
       else if (level === 4 && hasSemesters) await client.delete(`/semesters/${item.id}`);
