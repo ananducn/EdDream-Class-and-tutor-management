@@ -163,7 +163,7 @@ export default function CurriculumPage() {
     } else if (level === 1) {
       setForm({ name: '' });
     } else if (level === 2) {
-      setForm({ name: '' });
+      setForm({ name: '', copy_from_batch_id: '' });
     } else if (level === 3) {
       setForm({ name: '', year_order: String(items.length + 1) });
     } else if (level === 4 && hasSemesters) {
@@ -203,8 +203,13 @@ export default function CurriculumPage() {
         await client.post('/streams', { name: form.name, university_id: uni });
         toast.success('Stream added.');
       } else if (level === 2) {
-        await client.post('/batches', { name: form.name, university_id: uni, stream_id: stream });
-        toast.success('Batch added.');
+        const res = await client.post('/batches', {
+          name: form.name,
+          university_id: uni,
+          stream_id: stream,
+          copy_from_batch_id: form.copy_from_batch_id || undefined,
+        });
+        toast.success(res.data.copied ? 'Batch added with curriculum structure copied.' : 'Batch added.');
       } else if (level === 3) {
         const payload = { batch_id: batch, name: form.name, year_order: parseInt(form.year_order) || 1 };
         editing ? await client.put(`/academic-years/${editing.id}`, payload) : await client.post('/academic-years', payload);
@@ -529,7 +534,23 @@ export default function CurriculumPage() {
       <div className="space-y-1"><Label>Stream / Course Name *</Label><Input value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. B.Com" required /></div>
     );
     if (level === 2) return (
-      <div className="space-y-1"><Label>Batch Name *</Label><Input value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Batch 2024–2027" required /></div>
+      <>
+        <div className="space-y-1"><Label>Batch Name *</Label><Input value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Batch 2024–2027" required /></div>
+        {items.length > 0 && (
+          <div className="space-y-1">
+            <Label>Copy curriculum structure from</Label>
+            <Select value={form.copy_from_batch_id || ''} onValueChange={(v) => setForm({ ...form, copy_from_batch_id: v })}>
+              <SelectTrigger className="w-full"><SelectValue placeholder="None (start blank)" /></SelectTrigger>
+              <SelectContent>
+                {items.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Copies academic years, semesters, subjects, chapters, and learning resources from the selected batch of this stream.
+            </p>
+          </div>
+        )}
+      </>
     );
     if (level === 3) return (
       <>
