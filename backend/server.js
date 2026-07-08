@@ -29,159 +29,165 @@ import niosResourcesRouter from './routes/nios-resources.js';
 import niosClassesRouter from './routes/nios-classes.js';
 import niosTimetablesRouter from './routes/nios-timetables.js';
 
-// Run any pending migrations idempotently on startup
-sql`ALTER TABLE class_entries ADD COLUMN IF NOT EXISTS is_cancelled BOOLEAN DEFAULT false`.catch(console.error);
-// Per-week timetable model: a timetable belongs to one specific week, and a class
-// entry can be linked to the slot it fulfils and carry its own scheduled/taken status.
-sql`ALTER TABLE timetables ADD COLUMN IF NOT EXISTS week_start_date DATE`.catch(console.error);
-sql`ALTER TABLE class_entries ADD COLUMN IF NOT EXISTS timetable_slot_id INTEGER REFERENCES timetable_slots(id) ON DELETE SET NULL`.catch(console.error);
-sql`ALTER TABLE class_entries ADD COLUMN IF NOT EXISTS stream_id INTEGER REFERENCES streams(id)`.catch(console.error);
-sql`ALTER TABLE class_entries ADD COLUMN IF NOT EXISTS class_status TEXT DEFAULT 'scheduled'`.catch(console.error);
-sql`CREATE TABLE IF NOT EXISTS academic_years (id SERIAL PRIMARY KEY, batch_id INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE, name TEXT NOT NULL, year_order INTEGER NOT NULL DEFAULT 1, is_active BOOLEAN NOT NULL DEFAULT true, created_at TIMESTAMPTZ DEFAULT NOW())`.catch(console.error);
-sql`CREATE TABLE IF NOT EXISTS academic_year_subjects (id SERIAL PRIMARY KEY, academic_year_id INTEGER NOT NULL REFERENCES academic_years(id) ON DELETE CASCADE, subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE, created_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(academic_year_id, subject_id))`.catch(console.error);
-sql`CREATE TABLE IF NOT EXISTS chapters (id SERIAL PRIMARY KEY, academic_year_subject_id INTEGER NOT NULL REFERENCES academic_year_subjects(id) ON DELETE CASCADE, title TEXT NOT NULL, description TEXT, chapter_order INTEGER NOT NULL DEFAULT 1, is_active BOOLEAN NOT NULL DEFAULT true, created_by INTEGER REFERENCES users(id), created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`.catch(console.error);
-sql`ALTER TABLE chapters ADD COLUMN IF NOT EXISTS academic_year_subject_id INTEGER REFERENCES academic_year_subjects(id) ON DELETE CASCADE`.catch(console.error);
-sql`ALTER TABLE chapters DROP COLUMN IF EXISTS subject_id`.catch(console.error);
-sql`ALTER TABLE streams DROP COLUMN IF EXISTS academic_year`.catch(console.error);
-sql`ALTER TABLE batches DROP COLUMN IF EXISTS semester`.catch(console.error);
-sql`ALTER TABLE subjects DROP COLUMN IF EXISTS semester`.catch(console.error);
-sql`CREATE TABLE IF NOT EXISTS semesters (id SERIAL PRIMARY KEY, academic_year_id INTEGER NOT NULL REFERENCES academic_years(id) ON DELETE CASCADE, name TEXT NOT NULL, semester_order INTEGER NOT NULL DEFAULT 1, is_active BOOLEAN NOT NULL DEFAULT true, created_at TIMESTAMPTZ DEFAULT NOW())`.catch(console.error);
-sql`ALTER TABLE academic_year_subjects ADD COLUMN IF NOT EXISTS semester_id INTEGER REFERENCES semesters(id) ON DELETE SET NULL`.catch(console.error);
-sql`ALTER TABLE timetables ADD COLUMN IF NOT EXISTS academic_year_id INTEGER REFERENCES academic_years(id)`.catch(console.error);
-sql`ALTER TABLE timetables ADD COLUMN IF NOT EXISTS semester_id INTEGER REFERENCES semesters(id)`.catch(console.error);
-sql`CREATE TABLE IF NOT EXISTS learning_resources (id SERIAL PRIMARY KEY, chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE, type TEXT NOT NULL CHECK (type IN ('notes','pdf','video','assignment','quiz','question_paper')), title TEXT NOT NULL, url TEXT, description TEXT, is_active BOOLEAN NOT NULL DEFAULT true, created_by INTEGER REFERENCES users(id), created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`.catch(console.error);
-sql`ALTER TABLE class_entries ADD COLUMN IF NOT EXISTS academic_year_id INTEGER REFERENCES academic_years(id)`.catch(console.error);
-sql`ALTER TABLE class_entries ADD COLUMN IF NOT EXISTS semester_id INTEGER REFERENCES semesters(id)`.catch(console.error);
-sql`ALTER TABLE class_entries ADD COLUMN IF NOT EXISTS chapter_id INTEGER REFERENCES chapters(id)`.catch(console.error);
+// Pending migrations, run idempotently on startup in dependency order. Each is a
+// thunk so nothing executes until runMigrations() awaits them one at a time — a
+// FK-dependent CREATE must never race ahead of its parent table, which is what
+// broke fresh databases when these were fired concurrently (fire-and-forget).
+const migrations = [
+  () => sql`ALTER TABLE class_entries ADD COLUMN IF NOT EXISTS is_cancelled BOOLEAN DEFAULT false`,
+  // Per-week timetable model: a timetable belongs to one specific week, and a class
+  // entry can be linked to the slot it fulfils and carry its own scheduled/taken status.
+  () => sql`ALTER TABLE timetables ADD COLUMN IF NOT EXISTS week_start_date DATE`,
+  () => sql`ALTER TABLE class_entries ADD COLUMN IF NOT EXISTS timetable_slot_id INTEGER REFERENCES timetable_slots(id) ON DELETE SET NULL`,
+  () => sql`ALTER TABLE class_entries ADD COLUMN IF NOT EXISTS stream_id INTEGER REFERENCES streams(id)`,
+  () => sql`ALTER TABLE class_entries ADD COLUMN IF NOT EXISTS class_status TEXT DEFAULT 'scheduled'`,
+  () => sql`CREATE TABLE IF NOT EXISTS academic_years (id SERIAL PRIMARY KEY, batch_id INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE, name TEXT NOT NULL, year_order INTEGER NOT NULL DEFAULT 1, is_active BOOLEAN NOT NULL DEFAULT true, created_at TIMESTAMPTZ DEFAULT NOW())`,
+  () => sql`CREATE TABLE IF NOT EXISTS academic_year_subjects (id SERIAL PRIMARY KEY, academic_year_id INTEGER NOT NULL REFERENCES academic_years(id) ON DELETE CASCADE, subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE, created_at TIMESTAMPTZ DEFAULT NOW(), UNIQUE(academic_year_id, subject_id))`,
+  () => sql`CREATE TABLE IF NOT EXISTS chapters (id SERIAL PRIMARY KEY, academic_year_subject_id INTEGER NOT NULL REFERENCES academic_year_subjects(id) ON DELETE CASCADE, title TEXT NOT NULL, description TEXT, chapter_order INTEGER NOT NULL DEFAULT 1, is_active BOOLEAN NOT NULL DEFAULT true, created_by INTEGER REFERENCES users(id), created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`,
+  () => sql`ALTER TABLE chapters ADD COLUMN IF NOT EXISTS academic_year_subject_id INTEGER REFERENCES academic_year_subjects(id) ON DELETE CASCADE`,
+  () => sql`ALTER TABLE chapters DROP COLUMN IF EXISTS subject_id`,
+  () => sql`ALTER TABLE streams DROP COLUMN IF EXISTS academic_year`,
+  () => sql`ALTER TABLE batches DROP COLUMN IF EXISTS semester`,
+  () => sql`ALTER TABLE subjects DROP COLUMN IF EXISTS semester`,
+  () => sql`CREATE TABLE IF NOT EXISTS semesters (id SERIAL PRIMARY KEY, academic_year_id INTEGER NOT NULL REFERENCES academic_years(id) ON DELETE CASCADE, name TEXT NOT NULL, semester_order INTEGER NOT NULL DEFAULT 1, is_active BOOLEAN NOT NULL DEFAULT true, created_at TIMESTAMPTZ DEFAULT NOW())`,
+  () => sql`ALTER TABLE academic_year_subjects ADD COLUMN IF NOT EXISTS semester_id INTEGER REFERENCES semesters(id) ON DELETE SET NULL`,
+  () => sql`ALTER TABLE timetables ADD COLUMN IF NOT EXISTS academic_year_id INTEGER REFERENCES academic_years(id)`,
+  () => sql`ALTER TABLE timetables ADD COLUMN IF NOT EXISTS semester_id INTEGER REFERENCES semesters(id)`,
+  () => sql`CREATE TABLE IF NOT EXISTS learning_resources (id SERIAL PRIMARY KEY, chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE, type TEXT NOT NULL CHECK (type IN ('notes','pdf','video','assignment','quiz','question_paper')), title TEXT NOT NULL, url TEXT, description TEXT, is_active BOOLEAN NOT NULL DEFAULT true, created_by INTEGER REFERENCES users(id), created_at TIMESTAMPTZ DEFAULT NOW(), updated_at TIMESTAMPTZ DEFAULT NOW())`,
+  () => sql`ALTER TABLE class_entries ADD COLUMN IF NOT EXISTS academic_year_id INTEGER REFERENCES academic_years(id)`,
+  () => sql`ALTER TABLE class_entries ADD COLUMN IF NOT EXISTS semester_id INTEGER REFERENCES semesters(id)`,
+  () => sql`ALTER TABLE class_entries ADD COLUMN IF NOT EXISTS chapter_id INTEGER REFERENCES chapters(id)`,
 
-// ── NIOS tables ────────────────────────────────────────────────────────────────
-sql`CREATE TABLE IF NOT EXISTS nios_universities (
-  id SERIAL PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
-  is_active BOOLEAN DEFAULT true,
-  created_at TIMESTAMPTZ DEFAULT NOW()
-)`.catch(console.error);
+  // ── NIOS tables ────────────────────────────────────────────────────────────────
+  () => sql`CREATE TABLE IF NOT EXISTS nios_universities (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )`,
+  () => sql`CREATE TABLE IF NOT EXISTS nios_batches (
+    id SERIAL PRIMARY KEY,
+    nios_university_id INTEGER NOT NULL REFERENCES nios_universities(id),
+    name TEXT NOT NULL,
+    year TEXT,
+    is_active BOOLEAN DEFAULT true,
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )`,
+  () => sql`CREATE TABLE IF NOT EXISTS nios_subjects (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    subject_code TEXT,
+    is_active BOOLEAN DEFAULT true,
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )`,
+  () => sql`CREATE TABLE IF NOT EXISTS nios_batch_subjects (
+    id SERIAL PRIMARY KEY,
+    nios_batch_id INTEGER NOT NULL REFERENCES nios_batches(id) ON DELETE CASCADE,
+    nios_subject_id INTEGER NOT NULL REFERENCES nios_subjects(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(nios_batch_id, nios_subject_id)
+  )`,
+  () => sql`CREATE TABLE IF NOT EXISTS nios_timetables (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    nios_university_id INTEGER REFERENCES nios_universities(id),
+    nios_batch_id INTEGER REFERENCES nios_batches(id),
+    week_start_date DATE,
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  )`,
+  () => sql`CREATE TABLE IF NOT EXISTS nios_timetable_slots (
+    id SERIAL PRIMARY KEY,
+    nios_timetable_id INTEGER NOT NULL REFERENCES nios_timetables(id) ON DELETE CASCADE,
+    day_of_week TEXT CHECK (day_of_week IN ('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday')),
+    start_time TIME,
+    end_time TIME,
+    faculty_id INTEGER REFERENCES faculty(id),
+    nios_subject_id INTEGER REFERENCES nios_subjects(id),
+    class_taken_status TEXT DEFAULT 'scheduled' CHECK (class_taken_status IN ('scheduled','taken','not_taken')),
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`,
+  () => sql`CREATE TABLE IF NOT EXISTS nios_class_entries (
+    id SERIAL PRIMARY KEY,
+    date DATE NOT NULL,
+    start_time TIME,
+    end_time TIME,
+    total_hours NUMERIC(4,2),
+    faculty_id INTEGER REFERENCES faculty(id),
+    nios_batch_id INTEGER REFERENCES nios_batches(id),
+    nios_subject_id INTEGER REFERENCES nios_subjects(id),
+    class_mode TEXT CHECK (class_mode IN ('online','offline')),
+    platform_used TEXT,
+    notes TEXT,
+    is_recorded BOOLEAN DEFAULT false,
+    recording_file_name TEXT,
+    recording_duration TEXT,
+    storage_location TEXT,
+    recording_link TEXT,
+    backup_available BOOLEAN DEFAULT false,
+    editing_status TEXT DEFAULT 'not_edited' CHECK (editing_status IN ('not_edited','edited')),
+    upload_student_app BOOLEAN DEFAULT false,
+    upload_student_app_date DATE,
+    upload_student_app_link TEXT,
+    upload_youtube BOOLEAN DEFAULT false,
+    upload_youtube_date DATE,
+    upload_youtube_link TEXT,
+    youtube_privacy TEXT CHECK (youtube_privacy IN ('public','unlisted','private')),
+    upload_gdrive BOOLEAN DEFAULT false,
+    upload_gdrive_link TEXT,
+    upload_harddisk BOOLEAN DEFAULT false,
+    upload_harddisk_location TEXT,
+    payment_status TEXT DEFAULT 'pending' CHECK (payment_status IN ('paid','pending')),
+    payment_remarks TEXT,
+    is_cancelled BOOLEAN DEFAULT false,
+    class_status TEXT DEFAULT 'scheduled' CHECK (class_status IN ('scheduled','taken','not_taken')),
+    nios_timetable_slot_id INTEGER REFERENCES nios_timetable_slots(id) ON DELETE SET NULL,
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`,
+  () => sql`CREATE TABLE IF NOT EXISTS nios_chapters (
+    id SERIAL PRIMARY KEY,
+    nios_batch_subject_id INTEGER NOT NULL REFERENCES nios_batch_subjects(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    description TEXT,
+    chapter_order INTEGER NOT NULL DEFAULT 1,
+    is_active BOOLEAN DEFAULT true,
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`,
+  () => sql`CREATE TABLE IF NOT EXISTS nios_resources (
+    id SERIAL PRIMARY KEY,
+    nios_chapter_id INTEGER NOT NULL REFERENCES nios_chapters(id) ON DELETE CASCADE,
+    type TEXT NOT NULL CHECK (type IN ('notes','pdf','video','assignment','quiz','question_paper')),
+    title TEXT NOT NULL,
+    url TEXT,
+    description TEXT,
+    is_active BOOLEAN DEFAULT true,
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`,
+  () => sql`ALTER TABLE nios_class_entries ADD COLUMN IF NOT EXISTS nios_chapter_id INTEGER REFERENCES nios_chapters(id) ON DELETE SET NULL`,
 
-sql`CREATE TABLE IF NOT EXISTS nios_batches (
-  id SERIAL PRIMARY KEY,
-  nios_university_id INTEGER NOT NULL REFERENCES nios_universities(id),
-  name TEXT NOT NULL,
-  year TEXT,
-  is_active BOOLEAN DEFAULT true,
-  created_by INTEGER REFERENCES users(id),
-  created_at TIMESTAMPTZ DEFAULT NOW()
-)`.catch(console.error);
+  // Seed fixed NIOS universities
+  () => sql`INSERT INTO nios_universities (name) VALUES ('NIOS +2'), ('NIOS SSLC') ON CONFLICT (name) DO NOTHING`,
+];
 
-sql`CREATE TABLE IF NOT EXISTS nios_subjects (
-  id SERIAL PRIMARY KEY,
-  name TEXT NOT NULL,
-  subject_code TEXT,
-  is_active BOOLEAN DEFAULT true,
-  created_by INTEGER REFERENCES users(id),
-  created_at TIMESTAMPTZ DEFAULT NOW()
-)`.catch(console.error);
-
-sql`CREATE TABLE IF NOT EXISTS nios_batch_subjects (
-  id SERIAL PRIMARY KEY,
-  nios_batch_id INTEGER NOT NULL REFERENCES nios_batches(id) ON DELETE CASCADE,
-  nios_subject_id INTEGER NOT NULL REFERENCES nios_subjects(id) ON DELETE CASCADE,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE(nios_batch_id, nios_subject_id)
-)`.catch(console.error);
-
-sql`CREATE TABLE IF NOT EXISTS nios_timetables (
-  id SERIAL PRIMARY KEY,
-  name TEXT NOT NULL,
-  nios_university_id INTEGER REFERENCES nios_universities(id),
-  nios_batch_id INTEGER REFERENCES nios_batches(id),
-  week_start_date DATE,
-  created_by INTEGER REFERENCES users(id),
-  created_at TIMESTAMPTZ DEFAULT NOW()
-)`.catch(console.error);
-
-sql`CREATE TABLE IF NOT EXISTS nios_timetable_slots (
-  id SERIAL PRIMARY KEY,
-  nios_timetable_id INTEGER NOT NULL REFERENCES nios_timetables(id) ON DELETE CASCADE,
-  day_of_week TEXT CHECK (day_of_week IN ('Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday')),
-  start_time TIME,
-  end_time TIME,
-  faculty_id INTEGER REFERENCES faculty(id),
-  nios_subject_id INTEGER REFERENCES nios_subjects(id),
-  class_taken_status TEXT DEFAULT 'scheduled' CHECK (class_taken_status IN ('scheduled','taken','not_taken')),
-  notes TEXT,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-)`.catch(console.error);
-
-sql`CREATE TABLE IF NOT EXISTS nios_class_entries (
-  id SERIAL PRIMARY KEY,
-  date DATE NOT NULL,
-  start_time TIME,
-  end_time TIME,
-  total_hours NUMERIC(4,2),
-  faculty_id INTEGER REFERENCES faculty(id),
-  nios_batch_id INTEGER REFERENCES nios_batches(id),
-  nios_subject_id INTEGER REFERENCES nios_subjects(id),
-  class_mode TEXT CHECK (class_mode IN ('online','offline')),
-  platform_used TEXT,
-  notes TEXT,
-  is_recorded BOOLEAN DEFAULT false,
-  recording_file_name TEXT,
-  recording_duration TEXT,
-  storage_location TEXT,
-  recording_link TEXT,
-  backup_available BOOLEAN DEFAULT false,
-  editing_status TEXT DEFAULT 'not_edited' CHECK (editing_status IN ('not_edited','edited')),
-  upload_student_app BOOLEAN DEFAULT false,
-  upload_student_app_date DATE,
-  upload_student_app_link TEXT,
-  upload_youtube BOOLEAN DEFAULT false,
-  upload_youtube_date DATE,
-  upload_youtube_link TEXT,
-  youtube_privacy TEXT CHECK (youtube_privacy IN ('public','unlisted','private')),
-  upload_gdrive BOOLEAN DEFAULT false,
-  upload_gdrive_link TEXT,
-  upload_harddisk BOOLEAN DEFAULT false,
-  upload_harddisk_location TEXT,
-  payment_status TEXT DEFAULT 'pending' CHECK (payment_status IN ('paid','pending')),
-  payment_remarks TEXT,
-  is_cancelled BOOLEAN DEFAULT false,
-  class_status TEXT DEFAULT 'scheduled' CHECK (class_status IN ('scheduled','taken','not_taken')),
-  nios_timetable_slot_id INTEGER REFERENCES nios_timetable_slots(id) ON DELETE SET NULL,
-  created_by INTEGER REFERENCES users(id),
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-)`.catch(console.error);
-
-sql`CREATE TABLE IF NOT EXISTS nios_chapters (
-  id SERIAL PRIMARY KEY,
-  nios_batch_subject_id INTEGER NOT NULL REFERENCES nios_batch_subjects(id) ON DELETE CASCADE,
-  title TEXT NOT NULL,
-  description TEXT,
-  chapter_order INTEGER NOT NULL DEFAULT 1,
-  is_active BOOLEAN DEFAULT true,
-  created_by INTEGER REFERENCES users(id),
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-)`.catch(console.error);
-
-sql`CREATE TABLE IF NOT EXISTS nios_resources (
-  id SERIAL PRIMARY KEY,
-  nios_chapter_id INTEGER NOT NULL REFERENCES nios_chapters(id) ON DELETE CASCADE,
-  type TEXT NOT NULL CHECK (type IN ('notes','pdf','video','assignment','quiz','question_paper')),
-  title TEXT NOT NULL,
-  url TEXT,
-  description TEXT,
-  is_active BOOLEAN DEFAULT true,
-  created_by INTEGER REFERENCES users(id),
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  updated_at TIMESTAMPTZ DEFAULT NOW()
-)`.catch(console.error);
-
-sql`ALTER TABLE nios_class_entries ADD COLUMN IF NOT EXISTS nios_chapter_id INTEGER REFERENCES nios_chapters(id) ON DELETE SET NULL`.catch(console.error);
-
-// Seed fixed NIOS universities
-sql`INSERT INTO nios_universities (name) VALUES ('NIOS +2'), ('NIOS SSLC') ON CONFLICT (name) DO NOTHING`.catch(console.error);
+async function runMigrations() {
+  for (const migrate of migrations) {
+    try {
+      await migrate();
+    } catch (err) {
+      console.error('Migration error:', err.message);
+    }
+  }
+}
 
 const app = express();
 
@@ -226,6 +232,10 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Finish migrations (in dependency order) before serving, so the first requests
+// after a fresh deploy never hit missing tables.
+runMigrations().finally(() => {
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
 });
