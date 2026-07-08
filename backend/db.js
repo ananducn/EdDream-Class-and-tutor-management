@@ -1,5 +1,7 @@
-import { neon, types } from '@neondatabase/serverless';
+import pg from 'pg';
 import 'dotenv/config';
+
+const { Pool, types } = pg;
 
 // Return PostgreSQL DATE columns (OID 1082) as plain 'YYYY-MM-DD' strings.
 // By default the driver parses them into JS Date objects at LOCAL midnight,
@@ -8,6 +10,27 @@ import 'dotenv/config';
 // avoids that off-by-one and keeps dates stable across read/write round-trips.
 types.setTypeParser(1082, (value) => value);
 
-const sql = neon(process.env.DATABASE_URL);
+const connectionString = process.env.DATABASE_URL;
 
-export { sql };
+// Railway's private networking (…railway.internal) does not use TLS. The public
+// proxy URL does, but with a self-signed cert, so disable verification there.
+const isInternal = /railway\.internal/.test(connectionString || '');
+
+const pool = new Pool({
+  connectionString,
+  ssl: isInternal ? false : { rejectUnauthorized: false },
+});
+
+// Tagged-template wrapper so existing `sql`...${x}...`` call sites keep working
+// unchanged. It turns the template into a parameterized query and returns the
+// rows array — matching the shape the Neon serverless driver used to return.
+async function sql(strings, ...values) {
+  let text = strings[0];
+  for (let i = 0; i < values.length; i++) {
+    text += `$${i + 1}${strings[i + 1]}`;
+  }
+  const result = await pool.query(text, values);
+  return result.rows;
+}
+
+export { sql, pool };
