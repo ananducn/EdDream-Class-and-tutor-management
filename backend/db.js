@@ -33,4 +33,11 @@ async function sql(strings, ...values) {
   return result.rows;
 }
 
+// Function-call form for dynamically-built queries: sql.query(text, params).
+// Mirrors the Neon serverless driver's .query() method, returning the rows array.
+sql.query = async (text, params = []) => {
+  const result = await pool.query(text, params);
+  return result.rows;
+};
+
 export { sql, pool };
