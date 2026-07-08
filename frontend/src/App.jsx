@@ -16,6 +16,7 @@ import FacultyPage from '@/pages/FacultyPage';
 import ClassesPage from '@/pages/ClassesPage';
 import TimetablePage from '@/pages/TimetablePage';
 import TimetableUniversityPage from '@/pages/timetable/TimetableUniversityPage';
+import TimetableStreamPage from '@/pages/timetable/TimetableStreamPage';
 import TimetableCalendarPage from '@/pages/timetable/TimetableCalendarPage';
 import DashboardPage from '@/pages/DashboardPage';
 import ReportsPage from '@/pages/ReportsPage';
@@ -84,7 +85,8 @@ export default function App() {
           <Route path="/classes" element={<ProtectedRoute><ClassesPage /></ProtectedRoute>} />
           <Route path="/timetable" element={<ProtectedRoute><TimetablePage /></ProtectedRoute>} />
           <Route path="/timetable/:universityId" element={<ProtectedRoute><TimetableUniversityPage /></ProtectedRoute>} />
-          <Route path="/timetable/:universityId/:batchId" element={<ProtectedRoute><TimetableCalendarPage /></ProtectedRoute>} />
+          <Route path="/timetable/:universityId/:streamId" element={<ProtectedRoute><TimetableStreamPage /></ProtectedRoute>} />
+          <Route path="/timetable/:universityId/:streamId/:batchId" element={<ProtectedRoute><TimetableCalendarPage /></ProtectedRoute>} />
           <Route path="/faculty" element={<ProtectedRoute adminOnly><FacultyPage /></ProtectedRoute>} />
           <Route path="/reports" element={<ProtectedRoute><ReportsPage /></ProtectedRoute>} />
           <Route path="/curriculum" element={<ProtectedRoute><CurriculumPage /></ProtectedRoute>} />

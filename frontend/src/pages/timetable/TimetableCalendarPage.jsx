@@ -83,7 +83,7 @@ const emptySlotForm = { day_of_week: '', start_time: '', end_time: '', faculty_i
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function TimetableCalendarPage() {
-  const { universityId, batchId } = useParams();
+  const { universityId, streamId, batchId } = useParams();
   const navigate = useNavigate();
   const { isAdmin } = useAuth();
   const confirm = useConfirm();
@@ -103,6 +103,7 @@ export default function TimetableCalendarPage() {
 
   // Breadcrumb names
   const [universityName, setUniversityName] = useState('');
+  const [streamName, setStreamName] = useState('');
   const [batchName, setBatchName] = useState('');
 
   // Calendar navigation
@@ -192,6 +193,15 @@ export default function TimetableCalendarPage() {
     loadDropdowns();
     loadTimetables();
   }, [universityId, batchId, loadTimetables]);
+
+  // Resolve the stream name for the breadcrumb.
+  useEffect(() => {
+    if (!streamId) return;
+    client
+      .get('/streams', { params: { university_id: universityId } })
+      .then((r) => setStreamName(r.data.find((s) => String(s.id) === streamId)?.name || ''))
+      .catch(() => { /* non-critical */ });
+  }, [universityId, streamId]);
 
   // ── Year / semester selection ─────────────────────────────────────────────────
 
@@ -401,6 +411,13 @@ export default function TimetableCalendarPage() {
           className="text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
         >
           {universityName || '...'}
+        </button>
+        <span className="text-slate-300 dark:text-slate-600">›</span>
+        <button
+          onClick={() => navigate(`/timetable/${universityId}/${streamId}`)}
+          className="text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+        >
+          {streamName || '...'}
         </button>
         <span className="text-slate-300 dark:text-slate-600">›</span>
         <span className="font-semibold text-slate-900 dark:text-slate-100">

@@ -3,41 +3,45 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import client from '@/api/client';
 
-export default function TimetableUniversityPage() {
-  const { universityId } = useParams();
+export default function TimetableStreamPage() {
+  const { universityId, streamId } = useParams();
   const navigate = useNavigate();
 
   const [universityName, setUniversityName] = useState('');
-  const [streams, setStreams] = useState([]);
-  const [batchCountByStream, setBatchCountByStream] = useState({});
+  const [streamName, setStreamName] = useState('');
+  const [batches, setBatches] = useState([]);
+  const [timetableCountByBatch, setTimetableCountByBatch] = useState({});
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function load() {
       try {
-        const [uRes, sRes, bRes] = await Promise.all([
+        const [uRes, sRes, bRes, tRes] = await Promise.all([
           client.get('/universities'),
           client.get('/streams', { params: { university_id: universityId } }),
-          client.get('/batches', { params: { university_id: universityId } }),
+          client.get('/batches', { params: { stream_id: streamId } }),
+          client.get('/timetables'),
         ]);
 
-        const uni = uRes.data.find((u) => String(u.id) === universityId);
-        setUniversityName(uni?.name || '');
-        setStreams(sRes.data);
+        setUniversityName(uRes.data.find((u) => String(u.id) === universityId)?.name || '');
+        setStreamName(sRes.data.find((s) => String(s.id) === streamId)?.name || '');
+        setBatches(bRes.data);
 
-        const bc = {};
-        bRes.data.forEach((b) => {
-          if (b.stream_id) bc[b.stream_id] = (bc[b.stream_id] || 0) + 1;
-        });
-        setBatchCountByStream(bc);
+        const tc = {};
+        tRes.data
+          .filter((t) => String(t.university_id) === universityId)
+          .forEach((t) => {
+            if (t.batch_id) tc[t.batch_id] = (tc[t.batch_id] || 0) + 1;
+          });
+        setTimetableCountByBatch(tc);
       } catch {
-        toast.error('Failed to load university data.');
+        toast.error('Failed to load stream data.');
       } finally {
         setLoading(false);
       }
     }
     load();
-  }, [universityId]);
+  }, [universityId, streamId]);
 
   return (
     <div className="space-y-6">
@@ -50,8 +54,15 @@ export default function TimetableUniversityPage() {
           Timetable
         </button>
         <span className="text-slate-300 dark:text-slate-600">›</span>
+        <button
+          onClick={() => navigate(`/timetable/${universityId}`)}
+          className="text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+        >
+          {universityName || '...'}
+        </button>
+        <span className="text-slate-300 dark:text-slate-600">›</span>
         <span className="font-semibold text-slate-900 dark:text-slate-100">
-          {loading ? '...' : universityName}
+          {loading ? '...' : streamName}
         </span>
       </div>
 
@@ -59,31 +70,35 @@ export default function TimetableUniversityPage() {
         <p className="text-sm text-slate-500 dark:text-slate-400">Loading...</p>
       ) : (
         <>
-          {/* Streams */}
+          {/* Batches */}
           <section className="space-y-3">
-            <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">Streams</h2>
-            {streams.length === 0 ? (
+            <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">Batches</h2>
+            {batches.length === 0 ? (
               <p className="text-sm text-slate-500 dark:text-slate-400">
-                No streams found for this university.
+                No batches found for this stream.
               </p>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                {streams.map((stream) => {
-                  const bc = batchCountByStream[stream.id] || 0;
+                {batches.map((batch) => {
+                  const tc = timetableCountByBatch[batch.id] || 0;
                   return (
                     <button
-                      key={stream.id}
-                      onClick={() => navigate(`/timetable/${universityId}/${stream.id}`)}
+                      key={batch.id}
+                      onClick={() => navigate(`/timetable/${universityId}/${streamId}/${batch.id}`)}
                       className="text-left rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 hover:border-indigo-300 dark:hover:border-indigo-600 hover:shadow-md transition-all group"
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <p className="font-medium text-slate-900 dark:text-slate-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors truncate">
-                            {stream.name}
+                            {batch.name}
                           </p>
                           <div className="flex gap-2 mt-2 flex-wrap">
-                            <span className="text-xs bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-2 py-0.5 rounded-full">
-                              {bc} {bc === 1 ? 'batch' : 'batches'}
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${
+                              tc > 0
+                                ? 'bg-indigo-50 dark:bg-indigo-900 text-indigo-600 dark:text-indigo-300'
+                                : 'bg-amber-50 dark:bg-amber-900 text-amber-600 dark:text-amber-300'
+                            }`}>
+                              {tc > 0 ? `${tc} timetable${tc > 1 ? 's' : ''}` : 'No timetable yet'}
                             </span>
                           </div>
                         </div>
