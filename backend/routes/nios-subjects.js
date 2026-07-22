@@ -23,9 +23,9 @@ router.get('/:id', auth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Staff and admins can create; editing and deactivating stay admin-only.
 router.post('/', auth, async (req, res, next) => {
   try {
-    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden.' });
     const { name, subject_code } = req.body;
     if (!name) return res.status(400).json({ error: 'Name is required.' });
     const rows = await sql`

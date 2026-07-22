@@ -61,7 +61,6 @@ async function placeNames(universityId, streamId) {
 }
 
 router.post('/', auth, async (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden.' });
   const { name, subject_code, university_id, stream_id, assignments } = req.body;
   if (!name || !university_id || !stream_id) return res.status(400).json({ error: 'Name, university, and stream are required.' });
   const valid = Array.isArray(assignments) && assignments.filter((a) => a.academic_year_id);

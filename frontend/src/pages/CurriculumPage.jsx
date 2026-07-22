@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { toast } from 'sonner';
-import { useAuth } from '@/context/AuthContext';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -36,7 +35,6 @@ const TYPE_COLORS = {
 const PARAM_ORDER = ['uni', 'stream', 'batch', 'year', 'semester', 'subject', 'chapter'];
 
 export default function CurriculumPage() {
-  const { isAdmin } = useAuth();
   const confirm = useConfirm();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -366,11 +364,11 @@ export default function CurriculumPage() {
     return '';
   }
 
-  // University / Stream / Batch creation is admin-only on the backend.
-  const canAdd = level >= 3 || isAdmin();
+  // Staff and admins can create at every curriculum level.
+  const canAdd = true;
 
-  // Show a secondary "Create new subject" button at the subject levels (admin only — POST /subjects is admin-restricted).
-  const canCreateSubject = isAdmin() && (level === 4 ? !hasSemesters : level === 5);
+  // Show a secondary "Create new subject" button at the subject levels.
+  const canCreateSubject = level === 4 ? !hasSemesters : level === 5;
 
   // ── Row rendering ──────────────────────────────────────────────────────────
 
