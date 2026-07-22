@@ -199,14 +199,26 @@ const migrations = [
   () => sql`INSERT INTO nios_universities (name) VALUES ('NIOS +2'), ('NIOS SSLC') ON CONFLICT (name) DO NOTHING`,
 ];
 
+// Runs every migration, collecting failures rather than stopping at the first —
+// one broken statement shouldn't hide the state of the rest. Returns the list of
+// failures so the caller can decide whether it is safe to serve traffic.
+//
+// Migrations are numbered by their position in the array above (1-based), which
+// is how you find the offending statement from the log.
 async function runMigrations() {
-  for (const migrate of migrations) {
+  const failures = [];
+  for (const [i, migrate] of migrations.entries()) {
     try {
       await migrate();
     } catch (err) {
-      console.error('Migration error:', err.message);
+      failures.push({ number: i + 1, message: err.message });
+      console.error(`Migration ${i + 1}/${migrations.length} FAILED: ${err.message}`);
     }
   }
+  if (failures.length === 0) {
+    console.log(`All ${migrations.length} migrations applied.`);
+  }
+  return failures;
 }
 
 const app = express();
@@ -254,8 +266,34 @@ app.use((err, req, res, next) => {
 const PORT = process.env.PORT || 5000;
 // Finish migrations (in dependency order) before serving, so the first requests
 // after a fresh deploy never hit missing tables.
-runMigrations().finally(() => {
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+//
+// A failed migration means the schema is incomplete, so we refuse to serve
+// rather than coming up "healthy" on a half-built database — the previous
+// behaviour logged one line per failure and started anyway, which on Railway
+// looks like a successful deploy. Exiting non-zero makes the platform surface
+// the deploy as failed; because every migration is idempotent, a restart simply
+// retries them, so a transient DB blip heals itself.
+//
+// Set ALLOW_INCOMPLETE_SCHEMA=true to start regardless — an escape hatch for
+// when a broken migration would otherwise keep the whole app down.
+runMigrations()
+  .then((failures) => {
+    if (failures.length > 0) {
+      const list = failures.map((f) => `  #${f.number}: ${f.message}`).join('\n');
+      console.error(
+        `\n${failures.length} of ${migrations.length} migrations FAILED — schema is incomplete:\n${list}\n`
+      );
+      if (process.env.ALLOW_INCOMPLETE_SCHEMA !== 'true') {
+        console.error('Refusing to start. Set ALLOW_INCOMPLETE_SCHEMA=true to override.');
+        process.exit(1);
+      }
+      console.error('ALLOW_INCOMPLETE_SCHEMA=true — starting anyway.');
+    }
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error('Migration runner crashed:', err);
+    process.exit(1);
   });
-});
