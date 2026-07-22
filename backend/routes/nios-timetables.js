@@ -214,14 +214,19 @@ router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
       }
     }
 
+    // Partial update: the calendar's quick status toggle sends only
+    // class_taken_status, so a field that is absent from the body must keep its
+    // current value. A field that IS sent but empty is an explicit clear (the
+    // edit dialog removing a faculty), which is why these are CASE WHEN on
+    // `!== undefined` rather than COALESCE — COALESCE cannot tell the two apart.
     const rows = await sql`
       UPDATE nios_timetable_slots SET
         day_of_week = COALESCE(${day_of_week || null}, day_of_week),
         start_time = COALESCE(${start_time || null}, start_time),
         end_time = COALESCE(${end_time || null}, end_time),
-        faculty_id = ${faculty_id || null},
-        nios_subject_id = ${nios_subject_id || null},
-        notes = ${notes || null},
+        faculty_id = CASE WHEN ${faculty_id !== undefined}::boolean THEN ${faculty_id || null}::integer ELSE faculty_id END,
+        nios_subject_id = CASE WHEN ${nios_subject_id !== undefined}::boolean THEN ${nios_subject_id || null}::integer ELSE nios_subject_id END,
+        notes = CASE WHEN ${notes !== undefined}::boolean THEN ${notes || null}::text ELSE notes END,
         class_taken_status = COALESCE(${class_taken_status || null}, class_taken_status),
         updated_at = NOW()
       WHERE id = ${req.params.slotId} AND nios_timetable_id = ${req.params.id}
