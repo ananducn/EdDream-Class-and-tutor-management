@@ -69,11 +69,6 @@ function normWeekStart(val) {
   return `${y}-${m}-${dd}`;
 }
 
-function getDayName(date) {
-  const d = date.getDay();
-  return DAY_NAMES[d === 0 ? 6 : d - 1];
-}
-
 function isToday(date) {
   return toDateStr(date) === toDateStr(new Date());
 }

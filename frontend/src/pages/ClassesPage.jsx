@@ -55,7 +55,6 @@ export default function ClassesPage() {
   const [filteredBatches, setFilteredBatches] = useState([]);
   const [formBatches, setFormBatches] = useState([]);
   const [formStreams, setFormStreams] = useState([]);
-  const [formSubjects, setFormSubjects] = useState([]);
   const [formAcademicYears, setFormAcademicYears] = useState([]);
   const [formSemesters, setFormSemesters] = useState([]);
   const [formAcademicYearSubjects, setFormAcademicYearSubjects] = useState([]);
@@ -87,7 +86,6 @@ export default function ClassesPage() {
     setFilteredBatches(bRes.data);
     setFormBatches(bRes.data);
     setFormStreams(stRes.data);
-    setFormSubjects(sRes.data);
   }
 
   async function loadClasses(params = filters) {
