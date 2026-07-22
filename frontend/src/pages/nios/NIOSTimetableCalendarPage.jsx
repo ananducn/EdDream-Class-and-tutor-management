@@ -73,7 +73,92 @@ function isToday(date) {
   return toDateStr(date) === toDateStr(new Date());
 }
 
-const emptySlotForm = { day_of_week: '', start_time: '', end_time: '', faculty_id: '', nios_subject_id: '', notes: '' };
+const emptySlotForm = { day_of_week: '', start_time: '', end_time: '', faculty_id: '', nios_chapter_ids: [], notes: '' };
+
+// Derive subject / chapter labels from a slot's chapters array (falls back to
+// the legacy singular subject for pre-migration slots).
+function slotSubjects(slot) {
+  const chs = Array.isArray(slot?.chapters) ? slot.chapters : [];
+  if (!chs.length) return slot?.subject_name || '';
+  return [...new Set(chs.map((x) => x.subject_name).filter(Boolean))].join(', ');
+}
+function slotChapters(slot) {
+  const chs = Array.isArray(slot?.chapters) ? slot.chapters : [];
+  return chs.map((x) => x.chapter_title).filter(Boolean).join(', ');
+}
+
+function toggleId(arr, id) {
+  const s = String(id);
+  return arr.includes(s) ? arr.filter((x) => x !== s) : [...arr, s];
+}
+
+// Reusable multi-chapter picker grouped by subject. `chaptersBySubject` and
+// `ensureChapters` are lifted to the page so both the add and edit dialogs share
+// one cache.
+function ChapterPicker({ subjects, chaptersBySubject, ensureChapters, selectedIds, onToggle }) {
+  const [pickerSubject, setPickerSubject] = useState('');
+
+  function chapterLabel(id) {
+    for (const [subjectId, chs] of Object.entries(chaptersBySubject)) {
+      const ch = chs.find((c) => String(c.id) === String(id));
+      if (ch) {
+        const subj = subjects.find((s) => String(s.nios_subject_id) === String(subjectId));
+        return { title: ch.title, subject_name: subj?.subject_name || '' };
+      }
+    }
+    return { title: `#${id}`, subject_name: '' };
+  }
+
+  async function handleSubject(subjectId) {
+    setPickerSubject(subjectId);
+    await ensureChapters(subjectId);
+  }
+
+  return (
+    <div className="space-y-2">
+      <Label>Chapters <span className="text-xs font-normal text-slate-500 dark:text-slate-400">(one or more, across subjects)</span></Label>
+
+      {selectedIds.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {selectedIds.map((id) => {
+            const { title, subject_name } = chapterLabel(id);
+            return (
+              <span key={id} className="inline-flex items-center gap-1 rounded-full bg-slate-100 dark:bg-slate-800 px-2.5 py-1 text-xs text-slate-700 dark:text-slate-200">
+                {subject_name ? `${subject_name}: ` : ''}{title}
+                <button type="button" onClick={() => onToggle(id)} className="text-slate-400 hover:text-red-500" aria-label="Remove">×</button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      <Select value={pickerSubject} onValueChange={handleSubject}>
+        <SelectTrigger className="w-full"><SelectValue placeholder="Select a subject to add its chapters" /></SelectTrigger>
+        <SelectContent>
+          {subjects.map((s) => <SelectItem key={s.nios_subject_id} value={String(s.nios_subject_id)}>{s.subject_name}</SelectItem>)}
+        </SelectContent>
+      </Select>
+
+      {pickerSubject && (
+        <div className="max-h-40 overflow-y-auto rounded-md border border-slate-200 dark:border-slate-700 divide-y divide-slate-100 dark:divide-slate-800">
+          {(chaptersBySubject[pickerSubject] || []).length === 0 && (
+            <p className="p-2 text-xs text-slate-500 dark:text-slate-400">No chapters for this subject.</p>
+          )}
+          {(chaptersBySubject[pickerSubject] || []).map((ch) => {
+            const selected = selectedIds.includes(String(ch.id));
+            return (
+              <button type="button" key={ch.id} onClick={() => onToggle(ch.id)}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm ${selected ? 'bg-blue-50 dark:bg-blue-950 text-blue-800 dark:text-blue-200' : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
+                <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px] ${selected ? 'bg-blue-600 border-blue-600 text-white' : 'border-slate-300 dark:border-slate-600'}`}>{selected ? '✓' : ''}</span>
+                {ch.title}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 
@@ -85,6 +170,7 @@ export default function NIOSTimetableCalendarPage() {
 
   const [faculty, setFaculty] = useState([]);
   const [subjects, setSubjects] = useState([]);
+  const [chaptersBySubject, setChaptersBySubject] = useState({}); // { [subjectId]: [{id, title}] }
   const [timetableByWeek, setTimetableByWeek] = useState({});
   const [universityName, setUniversityName] = useState('');
   const [batchName, setBatchName] = useState('');
@@ -232,6 +318,17 @@ export default function NIOSTimetableCalendarPage() {
     }
   }
 
+  // Load (once) and cache the chapters for a given subject in this batch
+  async function ensureChapters(subjectId) {
+    if (!subjectId || chaptersBySubject[subjectId]) return;
+    const bs = subjects.find((s) => String(s.nios_subject_id) === String(subjectId));
+    if (!bs) return;
+    try {
+      const res = await client.get('/nios/chapters', { params: { nios_batch_subject_id: bs.id } });
+      setChaptersBySubject((prev) => ({ ...prev, [subjectId]: res.data }));
+    } catch { /**/ }
+  }
+
   // ── Add slot ──────────────────────────────────────────────────────────────
 
   function openAddSlot(prefillDay) {
@@ -275,16 +372,19 @@ export default function NIOSTimetableCalendarPage() {
 
   // ── Edit slot ─────────────────────────────────────────────────────────────
 
-  function openEditSlot(slot) {
+  async function openEditSlot(slot) {
     setEditSlotTarget({ slot, timetableId: slot._timetableId });
     setEditSlotForm({
       day_of_week: slot.day_of_week || '',
       start_time: slot.start_time?.slice(0, 5) || '',
       end_time: slot.end_time?.slice(0, 5) || '',
       faculty_id: slot.faculty_id ? String(slot.faculty_id) : '',
-      nios_subject_id: slot.nios_subject_id ? String(slot.nios_subject_id) : '',
+      nios_chapter_ids: (slot.chapters || []).map((ch) => String(ch.nios_chapter_id)),
       notes: slot.notes || '',
     });
+    // Preload chapters for the subjects this slot already covers so chips resolve
+    const subjectIds = [...new Set((slot.chapters || []).map((ch) => ch.nios_subject_id).filter(Boolean))];
+    await Promise.all(subjectIds.map((sid) => ensureChapters(sid)));
     setEditSlotOpen(true);
   }
 
@@ -428,15 +528,13 @@ export default function NIOSTimetableCalendarPage() {
                 <SelectContent>{faculty.map((f) => <SelectItem key={f.id} value={String(f.id)}>{f.name}</SelectItem>)}</SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label>Subject</Label>
-              <Select value={slotForm.nios_subject_id} onValueChange={(v) => setSlotForm({ ...slotForm, nios_subject_id: v })}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
-                <SelectContent>
-                  {subjects.map((s) => <SelectItem key={s.nios_subject_id} value={String(s.nios_subject_id)}>{s.subject_name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
+            <ChapterPicker
+              subjects={subjects}
+              chaptersBySubject={chaptersBySubject}
+              ensureChapters={ensureChapters}
+              selectedIds={slotForm.nios_chapter_ids}
+              onToggle={(id) => setSlotForm((f) => ({ ...f, nios_chapter_ids: toggleId(f.nios_chapter_ids, id) }))}
+            />
             <div className="space-y-1.5">
               <Label>Notes</Label>
               <Input value={slotForm.notes} onChange={(e) => setSlotForm({ ...slotForm, notes: e.target.value })} />
@@ -480,15 +578,13 @@ export default function NIOSTimetableCalendarPage() {
                 <SelectContent>{faculty.map((f) => <SelectItem key={f.id} value={String(f.id)}>{f.name}</SelectItem>)}</SelectContent>
               </Select>
             </div>
-            <div className="space-y-1.5">
-              <Label>Subject</Label>
-              <Select value={editSlotForm.nios_subject_id} onValueChange={(v) => setEditSlotForm({ ...editSlotForm, nios_subject_id: v })}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
-                <SelectContent>
-                  {subjects.map((s) => <SelectItem key={s.nios_subject_id} value={String(s.nios_subject_id)}>{s.subject_name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
+            <ChapterPicker
+              subjects={subjects}
+              chaptersBySubject={chaptersBySubject}
+              ensureChapters={ensureChapters}
+              selectedIds={editSlotForm.nios_chapter_ids}
+              onToggle={(id) => setEditSlotForm((f) => ({ ...f, nios_chapter_ids: toggleId(f.nios_chapter_ids, id) }))}
+            />
             <div className="space-y-1.5">
               <Label>Notes</Label>
               <Input value={editSlotForm.notes} onChange={(e) => setEditSlotForm({ ...editSlotForm, notes: e.target.value })} />
@@ -542,7 +638,8 @@ function SlotCard({ slot, onEdit, onSetStatus, onDelete }) {
       </div>
       <div>
         <p className="text-sm font-medium text-slate-900 dark:text-slate-100 leading-tight break-words">{slot.faculty_name || '—'}</p>
-        <p className="text-xs text-slate-500 dark:text-slate-400 break-words">{slot.subject_name || '—'}</p>
+        <p className="text-xs text-slate-500 dark:text-slate-400 break-words">{slotSubjects(slot) || '—'}</p>
+        {slotChapters(slot) && <p className="text-[11px] text-slate-400 dark:text-slate-500 break-words">{slotChapters(slot)}</p>}
       </div>
       {(slot.start_time || slot.end_time) && (
         <p className="text-xs text-slate-400 dark:text-slate-500">{slot.start_time?.slice(0, 5)} – {slot.end_time?.slice(0, 5)}</p>
@@ -654,13 +751,13 @@ function MonthlyView({ currentDate, grid, timetableByWeek, onWeekClick }) {
                       status === 'not_taken' ? 'bg-rose-400 dark:bg-rose-500'
                         : status === 'taken' ? 'bg-green-500 dark:bg-green-400'
                         : 'bg-amber-400 dark:bg-amber-500'
-                    }`} title={`${slot.faculty_name || '—'} · ${slot.subject_name || '—'} (${status})`} />
+                    }`} title={`${slot.faculty_name || '—'} · ${slotSubjects(slot) || '—'} (${status})`} />
                   );
                 })}
               </div>
               {slots[0] && (
                 <p className="text-xs text-slate-400 dark:text-slate-500 truncate mt-1 leading-tight">
-                  {slots[0].subject_name || slots[0].faculty_name || ''}
+                  {slotSubjects(slots[0]) || slots[0].faculty_name || ''}
                   {slots.length > 1 && ` +${slots.length - 1}`}
                 </p>
               )}

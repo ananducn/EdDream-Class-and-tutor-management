@@ -175,6 +175,26 @@ const migrations = [
   )`,
   () => sql`ALTER TABLE nios_class_entries ADD COLUMN IF NOT EXISTS nios_chapter_id INTEGER REFERENCES nios_chapters(id) ON DELETE SET NULL`,
 
+  // Multi-chapter support: a class / timetable slot can cover many chapters
+  () => sql`CREATE TABLE IF NOT EXISTS nios_class_chapters (
+    id SERIAL PRIMARY KEY,
+    nios_class_entry_id INTEGER NOT NULL REFERENCES nios_class_entries(id) ON DELETE CASCADE,
+    nios_chapter_id     INTEGER NOT NULL REFERENCES nios_chapters(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(nios_class_entry_id, nios_chapter_id)
+  )`,
+  () => sql`CREATE TABLE IF NOT EXISTS nios_timetable_slot_chapters (
+    id SERIAL PRIMARY KEY,
+    nios_timetable_slot_id INTEGER NOT NULL REFERENCES nios_timetable_slots(id) ON DELETE CASCADE,
+    nios_chapter_id        INTEGER NOT NULL REFERENCES nios_chapters(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(nios_timetable_slot_id, nios_chapter_id)
+  )`,
+  // Backfill class entries that already carry a single chapter
+  () => sql`INSERT INTO nios_class_chapters (nios_class_entry_id, nios_chapter_id)
+    SELECT id, nios_chapter_id FROM nios_class_entries WHERE nios_chapter_id IS NOT NULL
+    ON CONFLICT DO NOTHING`,
+
   // Seed fixed NIOS universities
   () => sql`INSERT INTO nios_universities (name) VALUES ('NIOS +2'), ('NIOS SSLC') ON CONFLICT (name) DO NOTHING`,
 ];

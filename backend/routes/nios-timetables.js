@@ -14,6 +14,41 @@ function hoursBetween(start, end) {
   return mins > 0 ? (mins / 60).toFixed(2) : null;
 }
 
+// Aggregated list of every chapter (with its derived subject) attached to a slot
+const SLOT_CHAPTERS_AGG = `COALESCE((
+    SELECT json_agg(json_build_object(
+      'nios_chapter_id', ch.id, 'chapter_title', ch.title,
+      'nios_subject_id', s.id, 'subject_name', s.name)
+      ORDER BY s.name, ch.chapter_order)
+    FROM nios_timetable_slot_chapters sc
+    JOIN nios_chapters ch ON ch.id = sc.nios_chapter_id
+    JOIN nios_batch_subjects bsx ON bsx.id = ch.nios_batch_subject_id
+    JOIN nios_subjects s ON s.id = bsx.nios_subject_id
+    WHERE sc.nios_timetable_slot_id = ts.id), '[]') AS chapters`;
+
+// Write a slot's chapter set and keep the legacy singular nios_subject_id in sync
+// with the first chapter's derived subject.
+async function syncSlotChapters(slotId, chapterIds) {
+  const ids = Array.isArray(chapterIds) ? chapterIds.filter(Boolean) : [];
+  await sql`DELETE FROM nios_timetable_slot_chapters WHERE nios_timetable_slot_id = ${slotId}`;
+  for (const cid of ids) {
+    await sql`
+      INSERT INTO nios_timetable_slot_chapters (nios_timetable_slot_id, nios_chapter_id)
+      VALUES (${slotId}, ${cid})
+      ON CONFLICT DO NOTHING
+    `;
+  }
+  if (ids.length) {
+    const s = await sql`
+      SELECT bs.nios_subject_id
+      FROM nios_chapters ch
+      JOIN nios_batch_subjects bs ON bs.id = ch.nios_batch_subject_id
+      WHERE ch.id = ${ids[0]}
+    `;
+    await sql`UPDATE nios_timetable_slots SET nios_subject_id = ${s[0]?.nios_subject_id || null} WHERE id = ${slotId}`;
+  }
+}
+
 async function syncNiosClassForSlot(slot, timetable, userId) {
   const status = slot.class_taken_status;
   const existing = await sql`SELECT id FROM nios_class_entries WHERE nios_timetable_slot_id = ${slot.id}`;
@@ -32,7 +67,7 @@ async function syncNiosClassForSlot(slot, timetable, userId) {
   const date = dateForSlot(timetable.week_start_date, slot.day_of_week);
   if (!date) return;
 
-  await sql`
+  const created = await sql`
     INSERT INTO nios_class_entries (
       date, start_time, end_time, total_hours,
       faculty_id, nios_batch_id, nios_subject_id,
@@ -43,7 +78,26 @@ async function syncNiosClassForSlot(slot, timetable, userId) {
       ${slot.faculty_id || null}, ${timetable.nios_batch_id || null},
       ${slot.nios_subject_id || null},
       'taken', ${slot.id}, ${userId}
+    ) RETURNING id
+  `;
+  // Copy the slot's chapters onto the newly created class
+  await sql`
+    INSERT INTO nios_class_chapters (nios_class_entry_id, nios_chapter_id)
+    SELECT ${created[0].id}, nios_chapter_id
+    FROM nios_timetable_slot_chapters WHERE nios_timetable_slot_id = ${slot.id}
+    ON CONFLICT DO NOTHING
+  `;
+  // Set the class's legacy singular chapter to the first (by subject/order)
+  await sql`
+    UPDATE nios_class_entries SET nios_chapter_id = (
+      SELECT cc.nios_chapter_id FROM nios_class_chapters cc
+      JOIN nios_chapters ch ON ch.id = cc.nios_chapter_id
+      JOIN nios_batch_subjects bs ON bs.id = ch.nios_batch_subject_id
+      JOIN nios_subjects s ON s.id = bs.nios_subject_id
+      WHERE cc.nios_class_entry_id = ${created[0].id}
+      ORDER BY s.name, ch.chapter_order LIMIT 1
     )
+    WHERE id = ${created[0].id}
   `;
 }
 
@@ -54,12 +108,21 @@ async function niosSlotContext(row, timetableId) {
       (SELECT name FROM nios_subjects WHERE id = ${row.nios_subject_id}) AS subject_name,
       (SELECT name FROM nios_timetables WHERE id = ${timetableId}) AS timetable_name
   `;
-  return rows[0];
+  const chapters = await sql`
+    SELECT DISTINCT s.name AS subject_name
+    FROM nios_timetable_slot_chapters sc
+    JOIN nios_chapters ch ON ch.id = sc.nios_chapter_id
+    JOIN nios_batch_subjects bs ON bs.id = ch.nios_batch_subject_id
+    JOIN nios_subjects s ON s.id = bs.nios_subject_id
+    WHERE sc.nios_timetable_slot_id = ${row.id}
+  `;
+  return { ...rows[0], subject_names: chapters.map((c) => c.subject_name) };
 }
 
 function niosSlotDetail(row, ctx) {
   const time = row.start_time && row.end_time ? ` ${row.start_time.slice(0, 5)}-${row.end_time.slice(0, 5)}` : '';
-  return `${ctx.subject_name || 'Subject N/A'} with ${ctx.faculty_name || 'Faculty N/A'} on ${row.day_of_week}${time} — ${ctx.timetable_name || 'timetable N/A'}`;
+  const subjectLabel = ctx.subject_names?.length ? ctx.subject_names.join(', ') : (ctx.subject_name || 'Subject N/A');
+  return `${subjectLabel} with ${ctx.faculty_name || 'Faculty N/A'} on ${row.day_of_week}${time} — ${ctx.timetable_name || 'timetable N/A'}`;
 }
 
 // ── Timetables ────────────────────────────────────────────────────────────────
@@ -99,14 +162,15 @@ router.get('/:id', auth, async (req, res, next) => {
     `;
     if (!timetables[0]) return res.status(404).json({ error: 'Not found.' });
 
-    const slots = await sql`
-      SELECT ts.*, f.name AS faculty_name, sub.name AS subject_name
-      FROM nios_timetable_slots ts
-      LEFT JOIN faculty f ON f.id = ts.faculty_id
-      LEFT JOIN nios_subjects sub ON sub.id = ts.nios_subject_id
-      WHERE ts.nios_timetable_id = ${req.params.id}
-      ORDER BY ts.start_time
-    `;
+    const slots = await sql.query(
+      `SELECT ts.*, f.name AS faculty_name, sub.name AS subject_name, ${SLOT_CHAPTERS_AGG}
+       FROM nios_timetable_slots ts
+       LEFT JOIN faculty f ON f.id = ts.faculty_id
+       LEFT JOIN nios_subjects sub ON sub.id = ts.nios_subject_id
+       WHERE ts.nios_timetable_id = $1
+       ORDER BY ts.start_time`,
+      [req.params.id]
+    );
     res.json({ ...timetables[0], slots });
   } catch (err) { next(err); }
 });
@@ -160,10 +224,11 @@ router.delete('/:id', auth, async (req, res, next) => {
 
 router.post('/:id/slots', auth, async (req, res, next) => {
   try {
-    const { day_of_week, start_time, end_time, faculty_id, nios_subject_id, notes, class_taken_status } = req.body;
+    const { day_of_week, start_time, end_time, faculty_id, nios_subject_id, nios_chapter_ids, notes, class_taken_status } = req.body;
     if (!day_of_week || !DAYS.includes(day_of_week)) {
       return res.status(400).json({ error: 'Valid day_of_week is required.' });
     }
+    const chapterIds = Array.isArray(nios_chapter_ids) ? nios_chapter_ids.filter(Boolean) : [];
 
     const tt = await sql`SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date FROM nios_timetables WHERE id = ${req.params.id}`;
     if (!tt[0]) return res.status(404).json({ error: 'Timetable not found.' });
@@ -184,6 +249,7 @@ router.post('/:id/slots', auth, async (req, res, next) => {
               ${faculty_id || null}, ${nios_subject_id || null}, ${notes || null}, ${class_taken_status || 'scheduled'})
       RETURNING *
     `;
+    await syncSlotChapters(rows[0].id, chapterIds);
     if (rows[0].class_taken_status !== 'not_taken') {
       await syncNiosClassForSlot(rows[0], tt[0], req.user.id);
     }
@@ -195,7 +261,7 @@ router.post('/:id/slots', auth, async (req, res, next) => {
 
 router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
   try {
-    const { day_of_week, start_time, end_time, faculty_id, nios_subject_id, notes, class_taken_status } = req.body;
+    const { day_of_week, start_time, end_time, faculty_id, nios_subject_id, nios_chapter_ids, notes, class_taken_status } = req.body;
 
     if (class_taken_status === 'taken') {
       const [tt, existing] = await Promise.all([
@@ -233,6 +299,12 @@ router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
       RETURNING *
     `;
     if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
+
+    // Only rewrite chapters when the client explicitly sends the array (a bare
+    // status change from the calendar omits it and must keep existing chapters).
+    if (Array.isArray(nios_chapter_ids)) {
+      await syncSlotChapters(rows[0].id, nios_chapter_ids.filter(Boolean));
+    }
 
     if (class_taken_status) {
       const tt = await sql`SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date FROM nios_timetables WHERE id = ${req.params.id}`;

@@ -15,10 +15,23 @@ import StatusBadge from '@/components/StatusBadge';
 import { useAuth } from '@/context/AuthContext';
 import client from '@/api/client';
 
+// Render helpers: derive subject / chapter labels from a class's chapters array
+// (falls back to the legacy singular columns for pre-migration rows).
+function subjectSummary(c) {
+  const chs = Array.isArray(c?.chapters) ? c.chapters : [];
+  if (!chs.length) return c?.subject_name || '';
+  return [...new Set(chs.map((x) => x.subject_name).filter(Boolean))].join(', ');
+}
+function chapterSummary(c) {
+  const chs = Array.isArray(c?.chapters) ? c.chapters : [];
+  if (!chs.length) return c?.chapter_title || '';
+  return chs.map((x) => x.chapter_title).filter(Boolean).join(', ');
+}
+
 const emptyForm = {
   date: '', start_time: '', end_time: '', total_hours: '',
   faculty_id: '',
-  nios_university_id: '', nios_batch_id: '', nios_subject_id: '', nios_chapter_id: '',
+  nios_university_id: '', nios_batch_id: '', nios_chapter_ids: [],
   class_status: 'scheduled',
   unit_chapter: '', class_mode: '', platform_used: '', notes: '',
   is_recorded: false, recording_file_name: '', recording_duration: '',
@@ -63,7 +76,8 @@ export default function NIOSClassesPage() {
   // Form-level cascade
   const [formBatches, setFormBatches] = useState([]);
   const [formBatchSubjects, setFormBatchSubjects] = useState([]); // [{id, nios_subject_id, subject_name}]
-  const [formChapters, setFormChapters] = useState([]);
+  const [chaptersBySubject, setChaptersBySubject] = useState({}); // { [subjectId]: [{id, title}] }
+  const [pickerSubject, setPickerSubject] = useState(''); // which subject's chapters are shown
 
   const [filters, setFilters] = useState(emptyFilters);
   const [formOpen, setFormOpen] = useState(false);
@@ -74,7 +88,7 @@ export default function NIOSClassesPage() {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [chapterRecording, setChapterRecording] = useState(null);
+  const [recordedInfo, setRecordedInfo] = useState({}); // { [chapterId]: recordingRow } for already-recorded chapters
 
   async function loadDropdowns() {
     const [fRes, uRes, bRes, sRes] = await Promise.all([
@@ -145,16 +159,20 @@ export default function NIOSClassesPage() {
   // ── Form cascade ──────────────────────────────────────────────────────────
 
   function handleFormUniChange(v) {
-    setForm({ ...form, nios_university_id: v, nios_batch_id: '', nios_subject_id: '', nios_chapter_id: '' });
+    setForm({ ...form, nios_university_id: v, nios_batch_id: '', nios_chapter_ids: [] });
     setFormBatches(v ? allBatches.filter((b) => String(b.nios_university_id) === v) : allBatches);
     setFormBatchSubjects([]);
-    setFormChapters([]);
+    setChaptersBySubject({});
+    setPickerSubject('');
+    setRecordedInfo({});
   }
 
   async function handleFormBatchChange(v) {
-    setForm((f) => ({ ...f, nios_batch_id: v, nios_subject_id: '', nios_chapter_id: '' }));
+    setForm((f) => ({ ...f, nios_batch_id: v, nios_chapter_ids: [] }));
     setFormBatchSubjects([]);
-    setFormChapters([]);
+    setChaptersBySubject({});
+    setPickerSubject('');
+    setRecordedInfo({});
     if (v) {
       try {
         const res = await client.get('/nios/batch-subjects', { params: { nios_batch_id: v } });
@@ -163,28 +181,51 @@ export default function NIOSClassesPage() {
     }
   }
 
-  async function handleFormSubjectChange(subjectId) {
-    setForm((f) => ({ ...f, nios_subject_id: subjectId, nios_chapter_id: '' }));
-    setFormChapters([]);
-    if (!subjectId) return;
-    const bs = formBatchSubjects.find((s) => String(s.nios_subject_id) === subjectId);
-    if (bs) {
+  // Load (once) and cache the chapters for a given subject in this batch
+  async function loadChaptersForSubject(subjectId, current) {
+    const map = current || chaptersBySubject;
+    if (!subjectId || map[subjectId]) return;
+    const bs = formBatchSubjects.find((s) => String(s.nios_subject_id) === String(subjectId));
+    if (!bs) return;
+    try {
+      const res = await client.get('/nios/chapters', { params: { nios_batch_subject_id: bs.id } });
+      setChaptersBySubject((prev) => ({ ...prev, [subjectId]: res.data }));
+    } catch { /**/ }
+  }
+
+  async function handlePickerSubjectChange(subjectId) {
+    setPickerSubject(subjectId);
+    await loadChaptersForSubject(subjectId);
+  }
+
+  async function toggleChapter(chapterId) {
+    const id = String(chapterId);
+    const has = form.nios_chapter_ids.includes(id);
+    setForm((f) => ({
+      ...f,
+      nios_chapter_ids: has ? f.nios_chapter_ids.filter((x) => x !== id) : [...f.nios_chapter_ids, id],
+    }));
+    if (has) {
+      setRecordedInfo((prev) => { const n = { ...prev }; delete n[id]; return n; });
+    } else if (!editing) {
+      // Warn if this chapter already has a recording elsewhere
       try {
-        const res = await client.get('/nios/chapters', { params: { nios_batch_subject_id: bs.id } });
-        setFormChapters(res.data);
-      } catch { /**/ }
+        const res = await client.get('/nios/classes', { params: { nios_chapter_id: id, is_recorded: 'true' } });
+        if (res.data.length > 0) setRecordedInfo((prev) => ({ ...prev, [id]: res.data[0] }));
+      } catch { /* non-critical */ }
     }
   }
 
-  async function handleFormChapterChange(v) {
-    if (editing) { setForm((f) => ({ ...f, nios_chapter_id: v })); return; }
-    setForm((f) => ({ ...f, nios_chapter_id: v }));
-    setChapterRecording(null);
-    if (!v) return;
-    try {
-      const res = await client.get('/nios/classes', { params: { nios_chapter_id: v, is_recorded: 'true' } });
-      if (res.data.length > 0) setChapterRecording(res.data[0]);
-    } catch { /* non-critical */ }
+  // Flat lookup of chapter id -> { title, subject_name } across loaded subjects
+  function chapterLabel(id) {
+    for (const [subjectId, chs] of Object.entries(chaptersBySubject)) {
+      const ch = chs.find((c) => String(c.id) === String(id));
+      if (ch) {
+        const subj = formBatchSubjects.find((s) => String(s.nios_subject_id) === String(subjectId));
+        return { title: ch.title, subject_name: subj?.subject_name || '' };
+      }
+    }
+    return { title: `#${id}`, subject_name: '' };
   }
 
   function handleTimeChange(field, value) {
@@ -199,10 +240,11 @@ export default function NIOSClassesPage() {
   function openAdd() {
     setEditing(null);
     setForm(emptyForm);
-    setChapterRecording(null);
+    setRecordedInfo({});
     setFormBatches(allBatches);
     setFormBatchSubjects([]);
-    setFormChapters([]);
+    setChaptersBySubject({});
+    setPickerSubject('');
     setFormOpen(true);
   }
 
@@ -216,8 +258,9 @@ export default function NIOSClassesPage() {
       faculty_id: c.faculty_id ? String(c.faculty_id) : '',
       nios_university_id: c.nios_university_id ? String(c.nios_university_id) : '',
       nios_batch_id: c.nios_batch_id ? String(c.nios_batch_id) : '',
-      nios_subject_id: c.nios_subject_id ? String(c.nios_subject_id) : '',
-      nios_chapter_id: c.nios_chapter_id ? String(c.nios_chapter_id) : '',
+      nios_chapter_ids: Array.isArray(c.chapters) && c.chapters.length
+        ? c.chapters.map((ch) => String(ch.nios_chapter_id))
+        : (c.nios_chapter_id ? [String(c.nios_chapter_id)] : []),
       class_status: c.class_status || 'scheduled',
       unit_chapter: c.unit_chapter || '',
       class_mode: c.class_mode || '',
@@ -242,23 +285,30 @@ export default function NIOSClassesPage() {
       upload_harddisk_location: c.upload_harddisk_location || '',
     });
 
-    setChapterRecording(null);
+    setRecordedInfo({});
     setFormBatches(c.nios_university_id ? allBatches.filter((b) => String(b.nios_university_id) === String(c.nios_university_id)) : allBatches);
     setFormBatchSubjects([]);
-    setFormChapters([]);
+    setChaptersBySubject({});
+    setPickerSubject('');
 
     if (c.nios_batch_id) {
       try {
         const bsRes = await client.get('/nios/batch-subjects', { params: { nios_batch_id: c.nios_batch_id } });
         setFormBatchSubjects(bsRes.data);
 
-        if (c.nios_subject_id) {
-          const bs = bsRes.data.find((s) => String(s.nios_subject_id) === String(c.nios_subject_id));
+        // Preload chapters for every subject this class already covers so the
+        // selected-chapter chips resolve to names.
+        const subjectIds = [...new Set((c.chapters || []).map((ch) => ch.nios_subject_id).filter(Boolean))];
+        const map = {};
+        for (const subjectId of subjectIds) {
+          const bs = bsRes.data.find((s) => String(s.nios_subject_id) === String(subjectId));
           if (bs) {
             const chapRes = await client.get('/nios/chapters', { params: { nios_batch_subject_id: bs.id } });
-            setFormChapters(chapRes.data);
+            map[subjectId] = chapRes.data;
           }
         }
+        setChaptersBySubject(map);
+        if (subjectIds[0]) setPickerSubject(String(subjectIds[0]));
       } catch { /**/ }
     }
 
@@ -267,7 +317,8 @@ export default function NIOSClassesPage() {
 
   async function quickSetStatus(c, status) {
     try {
-      await client.put(`/nios/classes/${c.id}`, { ...c, date: c.date?.slice(0, 10), class_status: status });
+      const nios_chapter_ids = (c.chapters || []).map((ch) => String(ch.nios_chapter_id));
+      await client.put(`/nios/classes/${c.id}`, { ...c, nios_chapter_ids, date: c.date?.slice(0, 10), class_status: status });
       toast.success('Status updated.');
       loadClasses();
     } catch (err) {
@@ -281,11 +332,10 @@ export default function NIOSClassesPage() {
       ['faculty_id', 'Faculty'],
       ['nios_university_id', 'University'],
       ['nios_batch_id', 'Batch'],
-      ['nios_subject_id', 'Subject'],
-      ['nios_chapter_id', 'Chapter'],
       ['class_mode', 'Class Mode'],
     ];
     const missing = requiredSelects.filter(([key]) => !form[key]).map(([, label]) => label);
+    if (!form.nios_chapter_ids.length) missing.push('at least one Chapter');
     if (missing.length) { toast.error(`Please select: ${missing.join(', ')}.`); return; }
 
     setSaving(true);
@@ -456,7 +506,12 @@ export default function NIOSClassesPage() {
                   className={c.class_status === 'taken' ? 'bg-green-100 hover:bg-green-200/70 dark:bg-green-900/30 dark:hover:bg-green-900/40' : ''}>
                   <TableCell className="text-slate-900 dark:text-slate-100">{c.date?.slice(0, 10)}</TableCell>
                   <TableCell>{c.faculty_name || '—'}</TableCell>
-                  <TableCell>{c.subject_name || '—'}</TableCell>
+                  <TableCell>
+                    <div className="text-slate-900 dark:text-slate-100">{subjectSummary(c) || '—'}</div>
+                    {chapterSummary(c) && (
+                      <div className="text-xs text-slate-500 dark:text-slate-400">{chapterSummary(c)}</div>
+                    )}
+                  </TableCell>
                   <TableCell>{c.university_name || '—'}</TableCell>
                   <TableCell>{c.batch_name || '—'}</TableCell>
                   <TableCell>{c.total_hours || '—'}</TableCell>
@@ -499,10 +554,10 @@ export default function NIOSClassesPage() {
               {[
                 ['Date', viewDialog.date?.slice(0, 10)],
                 ['Faculty', viewDialog.faculty_name],
-                ['Subject', viewDialog.subject_name],
+                ['Subject', subjectSummary(viewDialog)],
                 ['University', viewDialog.university_name],
                 ['Batch', viewDialog.batch_name],
-                ['Chapter', viewDialog.chapter_title],
+                ['Chapter', chapterSummary(viewDialog)],
                 ['Status', viewDialog.class_status],
                 ['Start Time', viewDialog.start_time],
                 ['End Time', viewDialog.end_time],
@@ -538,7 +593,7 @@ export default function NIOSClassesPage() {
           <DialogHeader><DialogTitle>Delete Class</DialogTitle></DialogHeader>
           <p className="text-sm text-slate-600 dark:text-slate-300">
             Are you sure you want to delete the class
-            {deleteTarget?.subject_name ? ` "${deleteTarget.subject_name}"` : ''}
+            {subjectSummary(deleteTarget) ? ` "${subjectSummary(deleteTarget)}"` : ''}
             {deleteTarget?.date ? ` on ${deleteTarget.date.slice(0, 10)}` : ''}? This action cannot be undone.
           </p>
           <div className="flex justify-end gap-2 mt-2">
@@ -598,21 +653,47 @@ export default function NIOSClassesPage() {
                     <SelectContent>{formBatches.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.name}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-1">
-                  <Label>Subject *</Label>
-                  <Select value={form.nios_subject_id} onValueChange={handleFormSubjectChange} disabled={!form.nios_batch_id}>
-                    <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
+                <div className="space-y-2 col-span-2">
+                  <Label>Chapters * <span className="text-xs font-normal text-slate-500 dark:text-slate-400">(pick one or more — from a single subject or across subjects)</span></Label>
+
+                  {form.nios_chapter_ids.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {form.nios_chapter_ids.map((id) => {
+                        const { title, subject_name } = chapterLabel(id);
+                        return (
+                          <span key={id} className="inline-flex items-center gap-1 rounded-full bg-slate-100 dark:bg-slate-800 px-2.5 py-1 text-xs text-slate-700 dark:text-slate-200">
+                            {subject_name ? `${subject_name}: ` : ''}{title}
+                            <button type="button" onClick={() => toggleChapter(id)} className="text-slate-400 hover:text-red-500" aria-label="Remove">×</button>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <Select value={pickerSubject} onValueChange={handlePickerSubjectChange} disabled={!form.nios_batch_id}>
+                    <SelectTrigger className="w-full"><SelectValue placeholder={form.nios_batch_id ? 'Select a subject to add its chapters' : 'Select a batch first'} /></SelectTrigger>
                     <SelectContent>
                       {formBatchSubjects.map((s) => <SelectItem key={s.nios_subject_id} value={String(s.nios_subject_id)}>{s.subject_name}</SelectItem>)}
                     </SelectContent>
                   </Select>
-                </div>
-                <div className="space-y-1">
-                  <Label>Chapter *</Label>
-                  <Select value={form.nios_chapter_id} onValueChange={handleFormChapterChange} disabled={!form.nios_subject_id}>
-                    <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
-                    <SelectContent>{formChapters.map((ch) => <SelectItem key={ch.id} value={String(ch.id)}>{ch.title}</SelectItem>)}</SelectContent>
-                  </Select>
+
+                  {pickerSubject && (
+                    <div className="max-h-44 overflow-y-auto rounded-md border border-slate-200 dark:border-slate-700 divide-y divide-slate-100 dark:divide-slate-800">
+                      {(chaptersBySubject[pickerSubject] || []).length === 0 && (
+                        <p className="p-2 text-xs text-slate-500 dark:text-slate-400">No chapters for this subject.</p>
+                      )}
+                      {(chaptersBySubject[pickerSubject] || []).map((ch) => {
+                        const selected = form.nios_chapter_ids.includes(String(ch.id));
+                        return (
+                          <button type="button" key={ch.id} onClick={() => toggleChapter(ch.id)}
+                            className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm ${selected ? 'bg-blue-50 dark:bg-blue-950 text-blue-800 dark:text-blue-200' : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
+                            <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[10px] ${selected ? 'bg-blue-600 border-blue-600 text-white' : 'border-slate-300 dark:border-slate-600'}`}>{selected ? '✓' : ''}</span>
+                            {ch.title}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
                 <div className="space-y-1">
                   <Label>Class Status</Label>
@@ -652,53 +733,46 @@ export default function NIOSClassesPage() {
 
             <div className="space-y-3">
               <p className="text-sm font-medium text-slate-900 dark:text-slate-100">Recording</p>
-              {chapterRecording ? (
-                <div className="rounded-lg border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950 p-3 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200">Already Recorded</span>
-                    <span className="text-xs text-slate-500 dark:text-slate-400">A recording exists for this chapter</span>
+              {Object.keys(recordedInfo).length > 0 && (
+                <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 p-3 space-y-1">
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200">Already Recorded</span>
+                  <p className="text-xs text-slate-600 dark:text-slate-300">A recording already exists for:</p>
+                  <ul className="text-xs text-slate-700 dark:text-slate-200 list-disc pl-4">
+                    {Object.keys(recordedInfo).map((id) => {
+                      const { title, subject_name } = chapterLabel(id);
+                      const rec = recordedInfo[id];
+                      return <li key={id}>{subject_name ? `${subject_name}: ` : ''}{title}{rec?.recording_file_name ? ` — ${rec.recording_file_name}` : ''}</li>;
+                    })}
+                  </ul>
+                </div>
+              )}
+              <div className="flex items-center gap-3">
+                <Switch checked={form.is_recorded} onCheckedChange={f('is_recorded')} id="is_recorded" />
+                <Label htmlFor="is_recorded">Was this class recorded?</Label>
+              </div>
+              {form.is_recorded && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label>File Name</Label>
+                    <Input value={form.recording_file_name} onChange={(e) => setForm({ ...form, recording_file_name: e.target.value })} />
                   </div>
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                    {chapterRecording.date && <><span className="text-slate-500 dark:text-slate-400">Date</span><span className="text-slate-900 dark:text-slate-100">{chapterRecording.date?.slice(0,10)}</span></>}
-                    {chapterRecording.faculty_name && <><span className="text-slate-500 dark:text-slate-400">Faculty</span><span className="text-slate-900 dark:text-slate-100">{chapterRecording.faculty_name}</span></>}
-                    {chapterRecording.recording_file_name && <><span className="text-slate-500 dark:text-slate-400">File</span><span className="text-slate-900 dark:text-slate-100 truncate">{chapterRecording.recording_file_name}</span></>}
-                    {chapterRecording.recording_duration && <><span className="text-slate-500 dark:text-slate-400">Duration</span><span className="text-slate-900 dark:text-slate-100">{chapterRecording.recording_duration}</span></>}
-                    {chapterRecording.storage_location && <><span className="text-slate-500 dark:text-slate-400">Storage</span><span className="text-slate-900 dark:text-slate-100">{chapterRecording.storage_location}</span></>}
-                    {chapterRecording.recording_link && <><span className="text-slate-500 dark:text-slate-400">Link</span><a href={chapterRecording.recording_link} target="_blank" rel="noreferrer" className="text-blue-600 dark:text-blue-400 truncate hover:underline">{chapterRecording.recording_link}</a></>}
-                    {chapterRecording.backup_available && <><span className="text-slate-500 dark:text-slate-400">Backup</span><span className="text-green-700 dark:text-green-300">Available</span></>}
+                  <div className="space-y-1">
+                    <Label>Duration</Label>
+                    <Input value={form.recording_duration} onChange={(e) => setForm({ ...form, recording_duration: e.target.value })} placeholder="e.g. 1h 30m" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Storage Location</Label>
+                    <Input value={form.storage_location} onChange={(e) => setForm({ ...form, storage_location: e.target.value })} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Recording Link</Label>
+                    <Input value={form.recording_link} onChange={(e) => setForm({ ...form, recording_link: e.target.value })} />
+                  </div>
+                  <div className="flex items-center gap-3 col-span-2">
+                    <Switch checked={form.backup_available} onCheckedChange={f('backup_available')} id="backup" />
+                    <Label htmlFor="backup">Backup Available</Label>
                   </div>
                 </div>
-              ) : (
-                <>
-                  <div className="flex items-center gap-3">
-                    <Switch checked={form.is_recorded} onCheckedChange={f('is_recorded')} id="is_recorded" />
-                    <Label htmlFor="is_recorded">Was this class recorded?</Label>
-                  </div>
-                  {form.is_recorded && (
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1">
-                        <Label>File Name</Label>
-                        <Input value={form.recording_file_name} onChange={(e) => setForm({ ...form, recording_file_name: e.target.value })} />
-                      </div>
-                      <div className="space-y-1">
-                        <Label>Duration</Label>
-                        <Input value={form.recording_duration} onChange={(e) => setForm({ ...form, recording_duration: e.target.value })} placeholder="e.g. 1h 30m" />
-                      </div>
-                      <div className="space-y-1">
-                        <Label>Storage Location</Label>
-                        <Input value={form.storage_location} onChange={(e) => setForm({ ...form, storage_location: e.target.value })} />
-                      </div>
-                      <div className="space-y-1">
-                        <Label>Recording Link</Label>
-                        <Input value={form.recording_link} onChange={(e) => setForm({ ...form, recording_link: e.target.value })} />
-                      </div>
-                      <div className="flex items-center gap-3 col-span-2">
-                        <Switch checked={form.backup_available} onCheckedChange={f('backup_available')} id="backup" />
-                        <Label htmlFor="backup">Backup Available</Label>
-                      </div>
-                    </div>
-                  )}
-                </>
               )}
             </div>
 
