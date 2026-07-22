@@ -44,9 +44,9 @@ async function universityName(id) {
   return rows[0]?.name ?? null;
 }
 
+// Staff and admins can create; editing and deactivating stay admin-only.
 router.post('/', auth, async (req, res, next) => {
   try {
-    if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden.' });
     const { nios_university_id, name, year } = req.body;
     if (!name || !nios_university_id) return res.status(400).json({ error: 'Name and university are required.' });
     const rows = await sql`

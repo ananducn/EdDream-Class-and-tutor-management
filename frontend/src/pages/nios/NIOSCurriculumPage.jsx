@@ -277,7 +277,7 @@ export default function NIOSCurriculumPage() {
           </div>
         </div>
         <div className="flex gap-2">
-          {level === 2 && isAdmin() && (
+          {level === 2 && (
             <Button variant="outline" size="sm" onClick={() => { setCreateSubjectOpen(true); setCreateSubjectForm({ name: '', subject_code: '' }); }}>
               + New Subject
             </Button>
