@@ -22,7 +22,7 @@ const SLOT_CHAPTERS_AGG = `COALESCE((
       ORDER BY s.name, ch.chapter_order)
     FROM nios_timetable_slot_chapters sc
     JOIN nios_chapters ch ON ch.id = sc.nios_chapter_id
-    JOIN nios_batch_subjects bsx ON bsx.id = ch.nios_batch_subject_id
+    JOIN nios_university_subjects bsx ON bsx.id = ch.nios_university_subject_id
     JOIN nios_subjects s ON s.id = bsx.nios_subject_id
     WHERE sc.nios_timetable_slot_id = ts.id), '[]') AS chapters`;
 
@@ -42,7 +42,7 @@ async function syncSlotChapters(slotId, chapterIds) {
     const s = await sql`
       SELECT bs.nios_subject_id
       FROM nios_chapters ch
-      JOIN nios_batch_subjects bs ON bs.id = ch.nios_batch_subject_id
+      JOIN nios_university_subjects bs ON bs.id = ch.nios_university_subject_id
       WHERE ch.id = ${ids[0]}
     `;
     await sql`UPDATE nios_timetable_slots SET nios_subject_id = ${s[0]?.nios_subject_id || null} WHERE id = ${slotId}`;
@@ -92,7 +92,7 @@ async function syncNiosClassForSlot(slot, timetable, userId) {
     UPDATE nios_class_entries SET nios_chapter_id = (
       SELECT cc.nios_chapter_id FROM nios_class_chapters cc
       JOIN nios_chapters ch ON ch.id = cc.nios_chapter_id
-      JOIN nios_batch_subjects bs ON bs.id = ch.nios_batch_subject_id
+      JOIN nios_university_subjects bs ON bs.id = ch.nios_university_subject_id
       JOIN nios_subjects s ON s.id = bs.nios_subject_id
       WHERE cc.nios_class_entry_id = ${created[0].id}
       ORDER BY s.name, ch.chapter_order LIMIT 1
@@ -112,7 +112,7 @@ async function niosSlotContext(row, timetableId) {
     SELECT DISTINCT s.name AS subject_name
     FROM nios_timetable_slot_chapters sc
     JOIN nios_chapters ch ON ch.id = sc.nios_chapter_id
-    JOIN nios_batch_subjects bs ON bs.id = ch.nios_batch_subject_id
+    JOIN nios_university_subjects bs ON bs.id = ch.nios_university_subject_id
     JOIN nios_subjects s ON s.id = bs.nios_subject_id
     WHERE sc.nios_timetable_slot_id = ${row.id}
   `;

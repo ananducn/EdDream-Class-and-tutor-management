@@ -20,11 +20,13 @@ import academicYearSubjectsRouter from './routes/academic-year-subjects.js';
 import chaptersRouter from './routes/chapters.js';
 import learningResourcesRouter from './routes/learning-resources.js';
 import semestersRouter from './routes/semesters.js';
+import chapterRecordingsRouter from './routes/chapter-recordings.js';
 import niosUniversitiesRouter from './routes/nios-universities.js';
 import niosBatchesRouter from './routes/nios-batches.js';
 import niosSubjectsRouter from './routes/nios-subjects.js';
-import niosBatchSubjectsRouter from './routes/nios-batch-subjects.js';
+import niosUniversitySubjectsRouter from './routes/nios-university-subjects.js';
 import niosChaptersRouter from './routes/nios-chapters.js';
+import niosChapterRecordingsRouter from './routes/nios-chapter-recordings.js';
 import niosResourcesRouter from './routes/nios-resources.js';
 import niosClassesRouter from './routes/nios-classes.js';
 import niosTimetablesRouter from './routes/nios-timetables.js';
@@ -195,6 +197,129 @@ const migrations = [
     SELECT id, nios_chapter_id FROM nios_class_entries WHERE nios_chapter_id IS NOT NULL
     ON CONFLICT DO NOTHING`,
 
+  // ── Curriculum-level recordings, shared syllabus across batches ──────────────
+  // These migrations re-root the syllabus from batch to stream (NIOS: to
+  // university), move recording off class sessions onto a canonical per-chapter
+  // entity, and drop the now-unused per-session recording columns.
+  //
+  // They are structural + idempotent. Data backfills are intentionally omitted:
+  // the only environment was wiped to dummy data, so the DROP COLUMNs below
+  // discard nothing of value and no linkage needs re-mapping. On a fresh DB the
+  // ADD/DROP ... IF (NOT) EXISTS calls are no-ops (setup-db.js already builds the
+  // target shape), so the startup guard sees zero migration errors either way.
+
+  // Main side: academic_years now belongs to a stream, not a batch.
+  () => sql`ALTER TABLE academic_years ADD COLUMN IF NOT EXISTS stream_id INTEGER REFERENCES streams(id) ON DELETE CASCADE`,
+  () => sql`ALTER TABLE academic_years DROP COLUMN IF EXISTS batch_id`,
+
+  // Main side: strip recording/upload columns from class sessions.
+  () => sql`ALTER TABLE class_entries
+    DROP COLUMN IF EXISTS is_recorded,
+    DROP COLUMN IF EXISTS recording_file_name,
+    DROP COLUMN IF EXISTS recording_duration,
+    DROP COLUMN IF EXISTS storage_location,
+    DROP COLUMN IF EXISTS recording_link,
+    DROP COLUMN IF EXISTS backup_available,
+    DROP COLUMN IF EXISTS editing_status,
+    DROP COLUMN IF EXISTS upload_student_app,
+    DROP COLUMN IF EXISTS upload_student_app_date,
+    DROP COLUMN IF EXISTS upload_student_app_link,
+    DROP COLUMN IF EXISTS upload_youtube,
+    DROP COLUMN IF EXISTS upload_youtube_date,
+    DROP COLUMN IF EXISTS upload_youtube_link,
+    DROP COLUMN IF EXISTS youtube_privacy,
+    DROP COLUMN IF EXISTS upload_gdrive,
+    DROP COLUMN IF EXISTS upload_gdrive_link,
+    DROP COLUMN IF EXISTS upload_harddisk,
+    DROP COLUMN IF EXISTS upload_harddisk_location`,
+
+  // Main side: canonical per-chapter recording (shared across batches).
+  () => sql`CREATE TABLE IF NOT EXISTS chapter_recordings (
+    id SERIAL PRIMARY KEY,
+    chapter_id INTEGER NOT NULL UNIQUE REFERENCES chapters(id) ON DELETE CASCADE,
+    is_recorded BOOLEAN NOT NULL DEFAULT false,
+    faculty_id INTEGER REFERENCES faculty(id),
+    recording_date DATE,
+    recording_file_name TEXT,
+    recording_duration TEXT,
+    notes TEXT,
+    editing_status TEXT DEFAULT 'not_edited' CHECK (editing_status IN ('not_edited','edited')),
+    backup_available BOOLEAN DEFAULT false,
+    storage_location TEXT,
+    upload_youtube BOOLEAN DEFAULT false,
+    upload_youtube_link TEXT,
+    youtube_privacy TEXT CHECK (youtube_privacy IN ('public','unlisted','private')),
+    upload_gdrive BOOLEAN DEFAULT false,
+    upload_gdrive_link TEXT,
+    upload_student_app BOOLEAN DEFAULT false,
+    upload_student_app_link TEXT,
+    upload_harddisk BOOLEAN DEFAULT false,
+    upload_harddisk_location TEXT,
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`,
+
+  // NIOS: syllabus now hangs off the university (the batch-independent container).
+  () => sql`CREATE TABLE IF NOT EXISTS nios_university_subjects (
+    id SERIAL PRIMARY KEY,
+    nios_university_id INTEGER NOT NULL REFERENCES nios_universities(id) ON DELETE CASCADE,
+    nios_subject_id    INTEGER NOT NULL REFERENCES nios_subjects(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(nios_university_id, nios_subject_id)
+  )`,
+  () => sql`ALTER TABLE nios_chapters ADD COLUMN IF NOT EXISTS nios_university_subject_id INTEGER REFERENCES nios_university_subjects(id) ON DELETE CASCADE`,
+  () => sql`ALTER TABLE nios_chapters DROP COLUMN IF EXISTS nios_batch_subject_id`,
+  () => sql`DROP TABLE IF EXISTS nios_batch_subjects CASCADE`,
+
+  // NIOS: strip recording/upload columns from class sessions.
+  () => sql`ALTER TABLE nios_class_entries
+    DROP COLUMN IF EXISTS is_recorded,
+    DROP COLUMN IF EXISTS recording_file_name,
+    DROP COLUMN IF EXISTS recording_duration,
+    DROP COLUMN IF EXISTS storage_location,
+    DROP COLUMN IF EXISTS recording_link,
+    DROP COLUMN IF EXISTS backup_available,
+    DROP COLUMN IF EXISTS editing_status,
+    DROP COLUMN IF EXISTS upload_student_app,
+    DROP COLUMN IF EXISTS upload_student_app_date,
+    DROP COLUMN IF EXISTS upload_student_app_link,
+    DROP COLUMN IF EXISTS upload_youtube,
+    DROP COLUMN IF EXISTS upload_youtube_date,
+    DROP COLUMN IF EXISTS upload_youtube_link,
+    DROP COLUMN IF EXISTS youtube_privacy,
+    DROP COLUMN IF EXISTS upload_gdrive,
+    DROP COLUMN IF EXISTS upload_gdrive_link,
+    DROP COLUMN IF EXISTS upload_harddisk,
+    DROP COLUMN IF EXISTS upload_harddisk_location`,
+
+  // NIOS: canonical per-chapter recording.
+  () => sql`CREATE TABLE IF NOT EXISTS nios_chapter_recordings (
+    id SERIAL PRIMARY KEY,
+    nios_chapter_id INTEGER NOT NULL UNIQUE REFERENCES nios_chapters(id) ON DELETE CASCADE,
+    is_recorded BOOLEAN NOT NULL DEFAULT false,
+    faculty_id INTEGER REFERENCES faculty(id),
+    recording_date DATE,
+    recording_file_name TEXT,
+    recording_duration TEXT,
+    notes TEXT,
+    editing_status TEXT DEFAULT 'not_edited' CHECK (editing_status IN ('not_edited','edited')),
+    backup_available BOOLEAN DEFAULT false,
+    storage_location TEXT,
+    upload_youtube BOOLEAN DEFAULT false,
+    upload_youtube_link TEXT,
+    youtube_privacy TEXT CHECK (youtube_privacy IN ('public','unlisted','private')),
+    upload_gdrive BOOLEAN DEFAULT false,
+    upload_gdrive_link TEXT,
+    upload_student_app BOOLEAN DEFAULT false,
+    upload_student_app_link TEXT,
+    upload_harddisk BOOLEAN DEFAULT false,
+    upload_harddisk_location TEXT,
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )`,
+
   // Seed fixed NIOS universities
   () => sql`INSERT INTO nios_universities (name) VALUES ('NIOS +2'), ('NIOS SSLC') ON CONFLICT (name) DO NOTHING`,
 ];
@@ -249,11 +374,13 @@ app.use('/api/academic-year-subjects', academicYearSubjectsRouter);
 app.use('/api/chapters', chaptersRouter);
 app.use('/api/learning-resources', learningResourcesRouter);
 app.use('/api/semesters', semestersRouter);
+app.use('/api/chapter-recordings', chapterRecordingsRouter);
 app.use('/api/nios/universities', niosUniversitiesRouter);
 app.use('/api/nios/batches', niosBatchesRouter);
 app.use('/api/nios/subjects', niosSubjectsRouter);
-app.use('/api/nios/batch-subjects', niosBatchSubjectsRouter);
+app.use('/api/nios/university-subjects', niosUniversitySubjectsRouter);
 app.use('/api/nios/chapters', niosChaptersRouter);
+app.use('/api/nios/chapter-recordings', niosChapterRecordingsRouter);
 app.use('/api/nios/resources', niosResourcesRouter);
 app.use('/api/nios/classes', niosClassesRouter);
 app.use('/api/nios/timetables', niosTimetablesRouter);

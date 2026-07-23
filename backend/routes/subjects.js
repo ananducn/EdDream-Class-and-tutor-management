@@ -17,22 +17,22 @@ router.get('/', auth, async (req, res) => {
   if (university_id) { conditions.push(`sub.university_id = $${i++}`); params.push(university_id); }
   if (stream_id)     { conditions.push(`sub.stream_id = $${i++}`);     params.push(stream_id); }
 
-  // Joins for curriculum filters
-  let aysJoin = '';
-  let ayJoin = '';
+  // A batch has no subjects of its own — it inherits its stream's syllabus, so
+  // filtering subjects "by batch" means the subjects of that batch's stream.
+  if (batch_id) {
+    conditions.push(`sub.stream_id = (SELECT stream_id FROM batches WHERE id = $${i++})`);
+    params.push(batch_id);
+  }
 
+  // Joins for curriculum filters (assigned / academic year / semester).
+  let aysJoin = '';
   if (assigned === 'false') {
     aysJoin = 'LEFT JOIN academic_year_subjects ays ON ays.subject_id = sub.id';
     conditions.push('ays.id IS NULL');
-  } else if (assigned === 'true' || batch_id || academic_year_id || semester_id) {
+  } else if (assigned === 'true' || academic_year_id || semester_id) {
     aysJoin = 'INNER JOIN academic_year_subjects ays ON ays.subject_id = sub.id';
   }
 
-  if (batch_id) {
-    ayJoin = 'INNER JOIN academic_years ay ON ay.id = ays.academic_year_id';
-    conditions.push(`ay.batch_id = $${i++}`);
-    params.push(batch_id);
-  }
   if (academic_year_id) { conditions.push(`ays.academic_year_id = $${i++}`); params.push(academic_year_id); }
   if (semester_id)      { conditions.push(`ays.semester_id = $${i++}`);      params.push(semester_id); }
 
@@ -43,7 +43,7 @@ router.get('/', auth, async (req, res) => {
      FROM subjects sub
      LEFT JOIN universities u ON u.id = sub.university_id
      LEFT JOIN streams s ON s.id = sub.stream_id
-     ${aysJoin} ${ayJoin}
+     ${aysJoin}
      ${where}
      ORDER BY sub.name`,
     params

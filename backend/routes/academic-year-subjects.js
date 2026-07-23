@@ -24,19 +24,18 @@ router.get('/', auth, async (req, res, next) => {
       return res.json(rows);
     }
 
-    // By subject: return all years this subject is assigned to, with batch info
+    // By subject: return all stream-level years this subject is assigned to.
     if (subject_id) {
       const rows = await sql`
-        SELECT ays.*, ay.name AS academic_year_name, ay.year_order, ay.batch_id,
-               b.name AS batch_name, b.university_id,
-               u.name AS university_name, st.name AS stream_name
+        SELECT ays.*, ay.name AS academic_year_name, ay.year_order, ay.stream_id,
+               st.name AS stream_name, st.university_id,
+               u.name AS university_name
         FROM academic_year_subjects ays
         JOIN academic_years ay ON ay.id = ays.academic_year_id
-        JOIN batches b ON b.id = ay.batch_id
-        LEFT JOIN universities u ON u.id = b.university_id
-        LEFT JOIN streams st ON st.id = b.stream_id
+        JOIN streams st ON st.id = ay.stream_id
+        LEFT JOIN universities u ON u.id = st.university_id
         WHERE ays.subject_id = ${subject_id}
-        ORDER BY b.name, ay.year_order
+        ORDER BY st.name, ay.year_order
       `;
       return res.json(rows);
     }
@@ -63,7 +62,7 @@ async function yearSubjectNames(subjectId, academicYearId) {
     SELECT
       (SELECT name FROM subjects WHERE id = ${subjectId}) AS subject_name,
       (SELECT name FROM academic_years WHERE id = ${academicYearId}) AS academic_year_name,
-      (SELECT b.name FROM academic_years ay JOIN batches b ON b.id = ay.batch_id WHERE ay.id = ${academicYearId}) AS batch_name
+      (SELECT st.name FROM academic_years ay JOIN streams st ON st.id = ay.stream_id WHERE ay.id = ${academicYearId}) AS stream_name
   `;
   return rows[0];
 }
@@ -82,7 +81,7 @@ router.post('/', auth, async (req, res, next) => {
     });
     const names = await yearSubjectNames(subject_id, academic_year_id);
     await logActivity(req.user.id, req.user.name, req.user.role, 'add_year_subject', 'academic_year_subject', rows[0].id,
-      `Added subject: ${names.subject_name} to ${names.academic_year_name} (${names.batch_name})`);
+      `Added subject: ${names.subject_name} to ${names.academic_year_name} (${names.stream_name})`);
     res.status(201).json(rows[0]);
   } catch (err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
@@ -96,7 +95,7 @@ router.delete('/:id', auth, async (req, res, next) => {
     if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
     const names = await yearSubjectNames(rows[0].subject_id, rows[0].academic_year_id);
     await logActivity(req.user.id, req.user.name, req.user.role, 'remove_year_subject', 'academic_year_subject', rows[0].id,
-      `Removed subject: ${names.subject_name} from ${names.academic_year_name} (${names.batch_name})`);
+      `Removed subject: ${names.subject_name} from ${names.academic_year_name} (${names.stream_name})`);
     res.json({ message: 'Removed.' });
   } catch (err) { next(err); }
 });

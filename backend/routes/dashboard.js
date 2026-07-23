@@ -26,16 +26,22 @@ router.get('/summary', auth, async (req, res, next) => {
           WHERE class_mode = 'offline'
           AND DATE_TRUNC('month', date) = DATE_TRUNC('month', CURRENT_DATE)`,
 
-      sql`SELECT COUNT(*) AS count FROM class_entries
-          WHERE is_recorded = false
-          AND DATE_TRUNC('month', date) = DATE_TRUNC('month', CURRENT_DATE)`,
+      // Recording is now tracked per chapter (shared across batches), so
+      // "pending recordings" = active chapters not yet marked recorded.
+      sql`SELECT COUNT(*) AS count FROM chapters ch
+          WHERE ch.is_active = true
+          AND NOT EXISTS (
+            SELECT 1 FROM chapter_recordings r
+            WHERE r.chapter_id = ch.id AND r.is_recorded = true
+          )`,
 
-      sql`SELECT COUNT(*) AS count FROM class_entries
-          WHERE is_recorded = true
-          AND upload_student_app = false
-          AND upload_youtube = false
-          AND upload_gdrive = false
-          AND upload_harddisk = false`,
+      // "pending uploads" = recorded chapters not yet on any destination.
+      sql`SELECT COUNT(*) AS count FROM chapter_recordings r
+          WHERE r.is_recorded = true
+          AND COALESCE(r.upload_student_app, false) = false
+          AND COALESCE(r.upload_youtube, false) = false
+          AND COALESCE(r.upload_gdrive, false) = false
+          AND COALESCE(r.upload_harddisk, false) = false`,
 
       sql`SELECT f.name AS faculty_name, COALESCE(SUM(ce.total_hours), 0) AS total_hours
           FROM faculty f

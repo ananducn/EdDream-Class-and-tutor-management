@@ -23,8 +23,7 @@ router.get('/faculty', auth, async (req, res, next) => {
       SELECT
         COALESCE(f.name, 'Unassigned') AS faculty_name,
         COUNT(c.id)::int AS total_classes,
-        COALESCE(SUM(c.total_hours), 0)::numeric(10,2) AS total_hours,
-        COUNT(CASE WHEN c.is_recorded = true THEN 1 END)::int AS recorded_classes
+        COALESCE(SUM(c.total_hours), 0)::numeric(10,2) AS total_hours
       FROM class_entries c
       LEFT JOIN faculty f ON f.id = c.faculty_id
       WHERE c.date BETWEEN ${date_from} AND ${date_to}
@@ -38,18 +37,17 @@ router.get('/faculty', auth, async (req, res, next) => {
   }
 });
 
+// Recording is now tracked per chapter (shared across batches), so this is a
+// snapshot of the whole syllabus rather than a date-ranged count of sessions.
 router.get('/recordings', auth, async (req, res, next) => {
   try {
-    const dates = requireDates(req, res);
-    if (!dates) return;
-    const { date_from, date_to } = dates;
-
     const rows = await sql`
       SELECT
-        COUNT(CASE WHEN is_recorded = true THEN 1 END)::int AS total_recorded,
-        COUNT(CASE WHEN is_recorded = false THEN 1 END)::int AS total_not_recorded
-      FROM class_entries
-      WHERE date BETWEEN ${date_from} AND ${date_to}
+        COUNT(*) FILTER (WHERE r.is_recorded = true)::int AS total_recorded,
+        COUNT(*) FILTER (WHERE r.is_recorded IS NOT TRUE)::int AS total_not_recorded
+      FROM chapters ch
+      LEFT JOIN chapter_recordings r ON r.chapter_id = ch.id
+      WHERE ch.is_active = true
     `;
     res.json(rows[0]);
   } catch (err) {
@@ -58,24 +56,23 @@ router.get('/recordings', auth, async (req, res, next) => {
   }
 });
 
+// Recorded chapters and where each one lives. Chapter-level, not date-ranged.
 router.get('/uploads', auth, async (req, res, next) => {
   try {
-    const dates = requireDates(req, res);
-    if (!dates) return;
-    const { date_from, date_to } = dates;
-
     const rows = await sql`
       SELECT
-        c.id, c.date,
+        r.id, r.recording_date AS date,
         COALESCE(f.name, 'Unassigned') AS faculty_name,
         COALESCE(sub.name, '—') AS subject_name,
-        c.upload_student_app, c.upload_youtube, c.upload_gdrive, c.upload_harddisk
-      FROM class_entries c
-      LEFT JOIN faculty f ON f.id = c.faculty_id
-      LEFT JOIN subjects sub ON sub.id = c.subject_id
-      WHERE c.date BETWEEN ${date_from} AND ${date_to}
-        AND c.is_recorded = true
-      ORDER BY c.date DESC
+        ch.title AS chapter_title,
+        r.upload_student_app, r.upload_youtube, r.upload_gdrive, r.upload_harddisk
+      FROM chapter_recordings r
+      JOIN chapters ch ON ch.id = r.chapter_id
+      JOIN academic_year_subjects ays ON ays.id = ch.academic_year_subject_id
+      LEFT JOIN subjects sub ON sub.id = ays.subject_id
+      LEFT JOIN faculty f ON f.id = r.faculty_id
+      WHERE r.is_recorded = true
+      ORDER BY sub.name, ch.chapter_order
     `;
     res.json(rows);
   } catch (err) {
@@ -143,7 +140,7 @@ function toCSV(rows) {
 function buildClassExportFilters(query) {
   const {
     date_from, date_to, faculty_id, subject_id, university_id, stream_id, batch_id,
-    academic_year_id, semester_id, class_mode, is_recorded, class_status,
+    academic_year_id, semester_id, class_mode, class_status,
   } = query;
   const conditions = [];
   const params = [];
@@ -164,9 +161,6 @@ function buildClassExportFilters(query) {
     params.push(semester_id);
   }
   if (class_mode)     { conditions.push(`c.class_mode = $${i++}`);        params.push(class_mode); }
-  if (is_recorded !== undefined && is_recorded !== '') {
-    conditions.push(`c.is_recorded = $${i++}`);                           params.push(is_recorded === 'true');
-  }
   if (class_status)   { conditions.push(`c.class_status = $${i++}`);      params.push(class_status); }
   return { conditions, params };
 }
@@ -188,31 +182,32 @@ router.get('/export', auth, async (req, res, next) => {
         SELECT
           COALESCE(f.name, 'Unassigned') AS faculty_name,
           COUNT(c.id)::int AS total_classes,
-          COALESCE(SUM(c.total_hours), 0)::numeric(10,2) AS total_hours,
-          COUNT(CASE WHEN c.is_recorded = true THEN 1 END)::int AS recorded_classes
+          COALESCE(SUM(c.total_hours), 0)::numeric(10,2) AS total_hours
         FROM class_entries c LEFT JOIN faculty f ON f.id = c.faculty_id
         WHERE c.date BETWEEN ${date_from} AND ${date_to}
         GROUP BY f.id, f.name ORDER BY total_hours DESC
       `;
     } else if (type === 'recordings') {
-      const r = await sql`
+      rows = await sql`
         SELECT
-          COUNT(CASE WHEN is_recorded = true THEN 1 END)::int AS total_recorded,
-          COUNT(CASE WHEN is_recorded = false THEN 1 END)::int AS total_not_recorded
-        FROM class_entries WHERE date BETWEEN ${date_from} AND ${date_to}
+          COUNT(*) FILTER (WHERE r.is_recorded = true)::int AS total_recorded,
+          COUNT(*) FILTER (WHERE r.is_recorded IS NOT TRUE)::int AS total_not_recorded
+        FROM chapters ch
+        LEFT JOIN chapter_recordings r ON r.chapter_id = ch.id
+        WHERE ch.is_active = true
       `;
-      rows = r;
     } else if (type === 'uploads') {
       rows = await sql`
-        SELECT c.date, COALESCE(f.name,'Unassigned') AS faculty_name,
-          COALESCE(sub.name,'—') AS subject_name,
-          c.upload_student_app, c.upload_youtube, c.upload_gdrive, c.upload_harddisk
-        FROM class_entries c
-        LEFT JOIN faculty f ON f.id = c.faculty_id
-        LEFT JOIN subjects sub ON sub.id = c.subject_id
-        WHERE c.date BETWEEN ${date_from} AND ${date_to}
-          AND c.is_recorded = true
-        ORDER BY c.date DESC
+        SELECT ch.title AS chapter_title, COALESCE(sub.name,'—') AS subject_name,
+          COALESCE(f.name,'Unassigned') AS faculty_name, r.recording_date,
+          r.upload_student_app, r.upload_youtube, r.upload_gdrive, r.upload_harddisk
+        FROM chapter_recordings r
+        JOIN chapters ch ON ch.id = r.chapter_id
+        JOIN academic_year_subjects ays ON ays.id = ch.academic_year_subject_id
+        LEFT JOIN subjects sub ON sub.id = ays.subject_id
+        LEFT JOIN faculty f ON f.id = r.faculty_id
+        WHERE r.is_recorded = true
+        ORDER BY sub.name, ch.chapter_order
       `;
     } else if (type === 'university') {
       rows = await sql`
@@ -241,11 +236,6 @@ router.get('/export', auth, async (req, res, next) => {
           c.total_hours,
           c.class_mode,
           c.class_status,
-          c.is_recorded,
-          c.upload_student_app,
-          c.upload_youtube,
-          c.upload_gdrive,
-          c.upload_harddisk,
           c.notes
         FROM class_entries c
         LEFT JOIN faculty f ON f.id = c.faculty_id

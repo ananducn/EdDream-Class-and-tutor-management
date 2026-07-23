@@ -36,11 +36,11 @@ router.get('/:id', auth, async (req, res, next) => {
 
 async function chapterPlace(academicYearSubjectId) {
   const rows = await sql`
-    SELECT s.name AS subject_name, ay.name AS academic_year_name, b.name AS batch_name
+    SELECT s.name AS subject_name, ay.name AS academic_year_name, st.name AS stream_name
     FROM academic_year_subjects ays
     JOIN subjects s ON s.id = ays.subject_id
     JOIN academic_years ay ON ay.id = ays.academic_year_id
-    JOIN batches b ON b.id = ay.batch_id
+    JOIN streams st ON st.id = ay.stream_id
     WHERE ays.id = ${academicYearSubjectId}
   `;
   return rows[0];
@@ -48,7 +48,7 @@ async function chapterPlace(academicYearSubjectId) {
 
 function chapterDetail(title, place) {
   if (!place) return `chapter: ${title}`;
-  return `chapter: ${title} — ${place.subject_name} (${place.batch_name}, ${place.academic_year_name})`;
+  return `chapter: ${title} — ${place.subject_name} (${place.stream_name}, ${place.academic_year_name})`;
 }
 
 router.post('/', auth, async (req, res, next) => {

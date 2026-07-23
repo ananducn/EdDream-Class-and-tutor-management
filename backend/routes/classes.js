@@ -13,7 +13,7 @@ function buildClassFilters(query) {
   const {
     date_from, date_to, faculty_id, subject_id, university_id, stream_id, batch_id,
     academic_year_id, semester_id, chapter_id,
-    class_mode, is_recorded, upload_youtube, upload_student_app, class_status,
+    class_mode, class_status,
   } = query;
 
   const conditions = [];
@@ -31,15 +31,6 @@ function buildClassFilters(query) {
   if (semester_id)      { conditions.push(`c.semester_id = $${i++}`);       params.push(semester_id); }
   if (chapter_id)       { conditions.push(`c.chapter_id = $${i++}`);        params.push(chapter_id); }
   if (class_mode)       { conditions.push(`c.class_mode = $${i++}`);        params.push(class_mode); }
-  if (is_recorded !== undefined && is_recorded !== '') {
-    conditions.push(`c.is_recorded = $${i++}`);                             params.push(is_recorded === 'true');
-  }
-  if (upload_youtube !== undefined && upload_youtube !== '') {
-    conditions.push(`c.upload_youtube = $${i++}`);                          params.push(upload_youtube === 'true');
-  }
-  if (upload_student_app !== undefined && upload_student_app !== '') {
-    conditions.push(`c.upload_student_app = $${i++}`);                      params.push(upload_student_app === 'true');
-  }
   if (class_status)     { conditions.push(`c.class_status = $${i++}`);      params.push(class_status); }
 
   return { conditions, params };
@@ -112,12 +103,6 @@ router.get('/summary', auth, async (req, res, next) => {
         COUNT(*) FILTER (WHERE c.class_status = 'not_taken')::int AS not_taken,
         COUNT(*) FILTER (WHERE c.class_status = 'scheduled')::int AS scheduled,
         COUNT(*) FILTER (WHERE c.is_cancelled = true)::int AS cancelled,
-        COUNT(*) FILTER (WHERE c.is_recorded = true)::int AS recorded,
-        COUNT(*) FILTER (WHERE c.is_recorded = false)::int AS not_recorded,
-        COUNT(*) FILTER (WHERE c.upload_student_app = true)::int AS upload_student_app,
-        COUNT(*) FILTER (WHERE c.upload_youtube = true)::int AS upload_youtube,
-        COUNT(*) FILTER (WHERE c.upload_gdrive = true)::int AS upload_gdrive,
-        COUNT(*) FILTER (WHERE c.upload_harddisk = true)::int AS upload_harddisk,
         COALESCE(SUM(c.total_hours), 0)::numeric(10,2) AS total_hours
        ${JOIN} ${where}`,
       params
@@ -126,46 +111,6 @@ router.get('/summary', auth, async (req, res, next) => {
   } catch (err) {
     next(err);
   }
-});
-
-router.get('/chapter-recording-overview', auth, async (req, res, next) => {
-  try {
-    const { batch_id, academic_year_id, semester_id } = req.query;
-    if (!batch_id) return res.status(400).json({ error: 'batch_id is required.' });
-
-    const conditions = ['ay.batch_id = $1'];
-    const params = [batch_id];
-    let i = 2;
-    if (academic_year_id) { conditions.push(`ay.id = $${i++}`);          params.push(academic_year_id); }
-    if (semester_id)      { conditions.push(`ays.semester_id = $${i++}`); params.push(semester_id); }
-
-    const rows = await sql.query(`
-      SELECT
-        ays.id                AS academic_year_subject_id,
-        ays.subject_id,
-        sub.name              AS subject_name,
-        ays.semester_id,
-        sem.name              AS semester_name,
-        ch.id                 AS chapter_id,
-        ch.title              AS chapter_title,
-        ch.chapter_order,
-        COUNT(c.id)::int                                                               AS total_classes,
-        COUNT(c.id) FILTER (WHERE c.is_recorded = true)::int                          AS recorded,
-        COUNT(c.id) FILTER (WHERE c.is_recorded = false OR c.is_recorded IS NULL)::int AS not_recorded
-      FROM academic_years ay
-      JOIN  academic_year_subjects ays ON ays.academic_year_id = ay.id
-      JOIN  subjects sub               ON sub.id = ays.subject_id
-      LEFT JOIN semesters sem          ON sem.id = ays.semester_id
-      LEFT JOIN chapters ch            ON ch.academic_year_subject_id = ays.id AND ch.is_active = true
-      LEFT JOIN class_entries c        ON c.chapter_id = ch.id AND c.batch_id = $1
-      WHERE ${conditions.join(' AND ')}
-      GROUP BY ays.id, ays.subject_id, sub.name, ays.semester_id, sem.name,
-               ch.id, ch.title, ch.chapter_order
-      ORDER BY sub.name, ch.chapter_order NULLS LAST
-    `, params);
-
-    res.json(rows);
-  } catch (err) { next(err); }
 });
 
 router.get('/:id', auth, async (req, res, next) => {
@@ -194,12 +139,7 @@ router.post('/', auth, async (req, res, next) => {
       date, start_time, end_time, total_hours, faculty_id, subject_id, university_id, batch_id, stream_id,
       academic_year_id, semester_id, chapter_id,
       unit_chapter, class_mode, platform_used, notes,
-      is_recorded, recording_file_name, recording_duration, storage_location, recording_link, backup_available,
-      editing_status,
-      upload_student_app, upload_student_app_date, upload_student_app_link,
-      upload_youtube, upload_youtube_date, upload_youtube_link, youtube_privacy,
-      upload_gdrive, upload_gdrive_link,
-      upload_harddisk, upload_harddisk_location,
+      payment_status, payment_remarks,
       is_cancelled, class_status, timetable_slot_id,
     } = req.body;
 
@@ -240,25 +180,14 @@ router.post('/', auth, async (req, res, next) => {
         date, start_time, end_time, total_hours, faculty_id, subject_id, university_id, batch_id, stream_id,
         academic_year_id, semester_id, chapter_id,
         unit_chapter, class_mode, platform_used, notes,
-        is_recorded, recording_file_name, recording_duration, storage_location, recording_link, backup_available,
-        editing_status,
-        upload_student_app, upload_student_app_date, upload_student_app_link,
-        upload_youtube, upload_youtube_date, upload_youtube_link, youtube_privacy,
-        upload_gdrive, upload_gdrive_link,
-        upload_harddisk, upload_harddisk_location,
+        payment_status, payment_remarks,
         is_cancelled, class_status, timetable_slot_id, created_by
       ) VALUES (
         ${date}, ${start_time || null}, ${end_time || null}, ${total_hours || null},
         ${faculty_id || null}, ${subject_id || null}, ${university_id || null}, ${batch_id || null}, ${resolvedStream},
         ${academic_year_id || null}, ${semester_id || null}, ${chapter_id || null},
         ${unit_chapter || null}, ${class_mode || null}, ${platform_used || null}, ${notes || null},
-        ${is_recorded ?? false}, ${recording_file_name || null}, ${recording_duration || null},
-        ${storage_location || null}, ${recording_link || null}, ${backup_available ?? false},
-        ${editing_status || 'not_edited'},
-        ${upload_student_app ?? false}, ${upload_student_app_date || null}, ${upload_student_app_link || null},
-        ${upload_youtube ?? false}, ${upload_youtube_date || null}, ${upload_youtube_link || null}, ${youtube_privacy || null},
-        ${upload_gdrive ?? false}, ${upload_gdrive_link || null},
-        ${upload_harddisk ?? false}, ${upload_harddisk_location || null},
+        ${payment_status || 'pending'}, ${payment_remarks || null},
         ${is_cancelled ?? false}, ${status}, ${timetable_slot_id || null}, ${req.user.id}
       ) RETURNING *
     `;
@@ -298,12 +227,7 @@ router.put('/:id', auth, async (req, res, next) => {
       date, start_time, end_time, total_hours, faculty_id, subject_id, university_id, batch_id, stream_id,
       academic_year_id, semester_id, chapter_id,
       unit_chapter, class_mode, platform_used, notes,
-      is_recorded, recording_file_name, recording_duration, storage_location, recording_link, backup_available,
-      editing_status,
-      upload_student_app, upload_student_app_date, upload_student_app_link,
-      upload_youtube, upload_youtube_date, upload_youtube_link, youtube_privacy,
-      upload_gdrive, upload_gdrive_link,
-      upload_harddisk, upload_harddisk_location,
+      payment_status, payment_remarks,
       is_cancelled, class_status,
     } = req.body;
 
@@ -332,19 +256,7 @@ router.put('/:id', auth, async (req, res, next) => {
         academic_year_id = ${academic_year_id || null}, semester_id = ${semester_id || null}, chapter_id = ${chapter_id || null},
         unit_chapter = ${unit_chapter || null}, class_mode = ${class_mode || null},
         platform_used = ${platform_used || null}, notes = ${notes || null},
-        is_recorded = ${is_recorded ?? false}, recording_file_name = ${recording_file_name || null},
-        recording_duration = ${recording_duration || null}, storage_location = ${storage_location || null},
-        recording_link = ${recording_link || null}, backup_available = ${backup_available ?? false},
-        editing_status = ${editing_status || 'not_edited'},
-        upload_student_app = ${upload_student_app ?? false},
-        upload_student_app_date = ${upload_student_app_date || null},
-        upload_student_app_link = ${upload_student_app_link || null},
-        upload_youtube = ${upload_youtube ?? false},
-        upload_youtube_date = ${upload_youtube_date || null},
-        upload_youtube_link = ${upload_youtube_link || null},
-        youtube_privacy = ${youtube_privacy || null},
-        upload_gdrive = ${upload_gdrive ?? false}, upload_gdrive_link = ${upload_gdrive_link || null},
-        upload_harddisk = ${upload_harddisk ?? false}, upload_harddisk_location = ${upload_harddisk_location || null},
+        payment_status = ${payment_status || 'pending'}, payment_remarks = ${payment_remarks || null},
         is_cancelled = ${is_cancelled ?? false}, class_status = ${status},
         updated_at = NOW()
       WHERE id = ${req.params.id} RETURNING *

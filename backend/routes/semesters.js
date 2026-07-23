@@ -28,8 +28,8 @@ router.get('/', auth, async (req, res, next) => {
 
 async function yearPlace(academicYearId) {
   const rows = await sql`
-    SELECT ay.name AS academic_year_name, b.name AS batch_name
-    FROM academic_years ay LEFT JOIN batches b ON b.id = ay.batch_id
+    SELECT ay.name AS academic_year_name, st.name AS stream_name
+    FROM academic_years ay LEFT JOIN streams st ON st.id = ay.stream_id
     WHERE ay.id = ${academicYearId}
   `;
   return rows[0];
@@ -46,7 +46,7 @@ router.post('/', auth, async (req, res, next) => {
     `;
     const place = await yearPlace(academic_year_id);
     await logActivity(req.user.id, req.user.name, req.user.role, 'create_semester', 'semester', rows[0].id,
-      `Created semester: ${name} for ${place?.academic_year_name || 'N/A'} (${place?.batch_name || 'N/A'})`);
+      `Created semester: ${name} for ${place?.academic_year_name || 'N/A'} (${place?.stream_name || 'N/A'})`);
     res.status(201).json(rows[0]);
   } catch (err) { next(err); }
 });
@@ -62,7 +62,7 @@ router.put('/:id', auth, async (req, res, next) => {
     if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
     const place = await yearPlace(rows[0].academic_year_id);
     await logActivity(req.user.id, req.user.name, req.user.role, 'update_semester', 'semester', rows[0].id,
-      `Updated semester: ${name} for ${place?.academic_year_name || 'N/A'} (${place?.batch_name || 'N/A'})`);
+      `Updated semester: ${name} for ${place?.academic_year_name || 'N/A'} (${place?.stream_name || 'N/A'})`);
     res.json(rows[0]);
   } catch (err) { next(err); }
 });
@@ -73,7 +73,7 @@ router.delete('/:id', auth, async (req, res, next) => {
     if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
     const place = await yearPlace(rows[0].academic_year_id);
     await logActivity(req.user.id, req.user.name, req.user.role, 'deactivate_semester', 'semester', rows[0].id,
-      `Deactivated semester: ${rows[0].name} for ${place?.academic_year_name || 'N/A'} (${place?.batch_name || 'N/A'})`);
+      `Deactivated semester: ${rows[0].name} for ${place?.academic_year_name || 'N/A'} (${place?.stream_name || 'N/A'})`);
     res.json(rows[0]);
   } catch (err) { next(err); }
 });
@@ -84,7 +84,7 @@ router.patch('/:id/activate', auth, async (req, res, next) => {
     if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
     const place = await yearPlace(rows[0].academic_year_id);
     await logActivity(req.user.id, req.user.name, req.user.role, 'activate_semester', 'semester', rows[0].id,
-      `Activated semester: ${rows[0].name} for ${place?.academic_year_name || 'N/A'} (${place?.batch_name || 'N/A'})`);
+      `Activated semester: ${rows[0].name} for ${place?.academic_year_name || 'N/A'} (${place?.stream_name || 'N/A'})`);
     res.json(rows[0]);
   } catch (err) { next(err); }
 });
