@@ -12,9 +12,10 @@ import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
 
-const PARAM_ORDER = ['uni', 'batch', 'subject', 'chapter'];
-
-const YEAR_OPTIONS = Array.from({ length: 11 }, (_, i) => String(2020 + i));
+// NIOS has no stream, so the shared container is the university itself
+// (NIOS +2 / NIOS SSLC). Syllabus: University → Subject → Chapter → Resource,
+// inherited by every batch of the university.
+const PARAM_ORDER = ['uni', 'subject', 'chapter'];
 
 const RESOURCE_TYPES = ['notes', 'pdf', 'video', 'assignment', 'quiz', 'question_paper'];
 const RESOURCE_LABELS = {
@@ -30,27 +31,23 @@ export default function NIOSCurriculumPage() {
   const [params, setParams] = useSearchParams();
 
   const uni     = params.get('uni');
-  const batch   = params.get('batch');
-  const subject = params.get('subject');
+  const subject = params.get('subject'); // nios_university_subject id
   const chapter = params.get('chapter');
 
   const uni_label     = params.get('uni_label') || '';
-  const batch_label   = params.get('batch_label') || '';
   const subject_label = params.get('subject_label') || '';
   const chapter_label = params.get('chapter_label') || '';
 
-  const level = chapter ? 4 : subject ? 3 : batch ? 2 : uni ? 1 : 0;
+  const level = chapter ? 3 : subject ? 2 : uni ? 1 : 0;
 
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
 
-  // Dialog state
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState(false);
 
-  // Subject assignment helpers
   const [allSubjects, setAllSubjects] = useState([]);
   const [createSubjectOpen, setCreateSubjectOpen] = useState(false);
   const [createSubjectForm, setCreateSubjectForm] = useState({ name: '', subject_code: '' });
@@ -79,20 +76,17 @@ export default function NIOSCurriculumPage() {
         const res = await client.get('/nios/universities');
         setItems(res.data);
       } else if (level === 1) {
-        const res = await client.get('/nios/batches', { params: { nios_university_id: uni, include_inactive: true } });
-        setItems(res.data);
-      } else if (level === 2) {
-        const [bsRes, subRes] = await Promise.all([
-          client.get('/nios/batch-subjects', { params: { nios_batch_id: batch } }),
+        const [usRes, subRes] = await Promise.all([
+          client.get('/nios/university-subjects', { params: { nios_university_id: uni } }),
           client.get('/nios/subjects'),
         ]);
-        setItems(bsRes.data);
-        const assignedIds = new Set(bsRes.data.map((bs) => bs.nios_subject_id));
+        setItems(usRes.data);
+        const assignedIds = new Set(usRes.data.map((us) => us.nios_subject_id));
         setAllSubjects(subRes.data.filter((s) => !assignedIds.has(s.id)));
-      } else if (level === 3) {
-        const res = await client.get('/nios/chapters', { params: { nios_batch_subject_id: subject, include_inactive: true } });
+      } else if (level === 2) {
+        const res = await client.get('/nios/chapters', { params: { nios_university_subject_id: subject, include_inactive: true } });
         setItems(res.data);
-      } else if (level === 4) {
+      } else if (level === 3) {
         const res = await client.get('/nios/resources', { params: { nios_chapter_id: chapter, include_inactive: true } });
         setItems(res.data);
       }
@@ -103,7 +97,7 @@ export default function NIOSCurriculumPage() {
     }
   }
 
-  useEffect(() => { load(); }, [uni, batch, subject, chapter, level]);
+  useEffect(() => { load(); }, [uni, subject, chapter, level]);
 
   // ── Dialog helpers ────────────────────────────────────────────────────────
 
@@ -120,17 +114,15 @@ export default function NIOSCurriculumPage() {
   }
 
   function defaultForm() {
-    if (level === 1) return { name: '', year: '' };
-    if (level === 2) return { nios_subject_id: '' };
-    if (level === 3) return { title: '', description: '', chapter_order: 1 };
-    if (level === 4) return { type: '', title: '', url: '', description: '' };
+    if (level === 1) return { nios_subject_id: '' };
+    if (level === 2) return { title: '', description: '', chapter_order: 1 };
+    if (level === 3) return { type: '', title: '', url: '', description: '' };
     return {};
   }
 
   function editForm(item) {
-    if (level === 1) return { name: item.name, year: item.year || '' };
-    if (level === 3) return { title: item.title, description: item.description || '', chapter_order: item.chapter_order };
-    if (level === 4) return { type: item.type, title: item.title, url: item.url || '', description: item.description || '' };
+    if (level === 2) return { title: item.title, description: item.description || '', chapter_order: item.chapter_order };
+    if (level === 3) return { type: item.type, title: item.title, url: item.url || '', description: item.description || '' };
     return {};
   }
 
@@ -138,27 +130,17 @@ export default function NIOSCurriculumPage() {
     setSaving(true);
     try {
       if (level === 1) {
-        if (!form.name) { toast.error('Batch name is required.'); setSaving(false); return; }
-        if (!form.year) { toast.error('Year is required.'); setSaving(false); return; }
-        if (editing) {
-          await client.put(`/nios/batches/${editing.id}`, form);
-          toast.success('Batch updated.');
-        } else {
-          await client.post('/nios/batches', { ...form, nios_university_id: uni });
-          toast.success('Batch created.');
-        }
-      } else if (level === 2) {
-        await client.post('/nios/batch-subjects', { nios_batch_id: batch, nios_subject_id: form.nios_subject_id });
+        await client.post('/nios/university-subjects', { nios_university_id: uni, nios_subject_id: form.nios_subject_id });
         toast.success('Subject assigned.');
-      } else if (level === 3) {
+      } else if (level === 2) {
         if (editing) {
           await client.put(`/nios/chapters/${editing.id}`, form);
           toast.success('Chapter updated.');
         } else {
-          await client.post('/nios/chapters', { ...form, nios_batch_subject_id: subject });
+          await client.post('/nios/chapters', { ...form, nios_university_subject_id: subject });
           toast.success('Chapter created.');
         }
-      } else if (level === 4) {
+      } else if (level === 3) {
         if (editing) {
           await client.put(`/nios/resources/${editing.id}`, form);
           toast.success('Resource updated.');
@@ -177,8 +159,8 @@ export default function NIOSCurriculumPage() {
   }
 
   async function handleDeactivate(item) {
-    const label = item.name || item.title || item.subject_name || 'this item';
-    const isRemove = level === 2;
+    const label = item.subject_name || item.title || 'this item';
+    const isRemove = level === 1;
     const ok = await confirm({
       title: isRemove ? 'Remove subject?' : 'Deactivate?',
       description: `Are you sure you want to ${isRemove ? 'remove' : 'deactivate'} "${label}"?`,
@@ -187,18 +169,15 @@ export default function NIOSCurriculumPage() {
     });
     if (!ok) return;
     try {
-      if (level === 2) {
-        await client.delete(`/nios/batch-subjects/${item.id}`);
-        toast.success('Subject removed from batch.');
-      } else if (level === 3) {
+      if (level === 1) {
+        await client.delete(`/nios/university-subjects/${item.id}`);
+        toast.success('Subject removed from syllabus.');
+      } else if (level === 2) {
         await client.delete(`/nios/chapters/${item.id}`);
         toast.success('Chapter deactivated.');
-      } else if (level === 4) {
+      } else if (level === 3) {
         await client.delete(`/nios/resources/${item.id}`);
         toast.success('Resource deactivated.');
-      } else if (level === 1) {
-        await client.delete(`/nios/batches/${item.id}`);
-        toast.success('Batch deactivated.');
       }
       load();
     } catch (err) {
@@ -208,9 +187,8 @@ export default function NIOSCurriculumPage() {
 
   async function handleActivate(item) {
     try {
-      if (level === 1) await client.patch(`/nios/batches/${item.id}/activate`);
-      else if (level === 3) await client.patch(`/nios/chapters/${item.id}/activate`);
-      else if (level === 4) await client.patch(`/nios/resources/${item.id}/activate`);
+      if (level === 2) await client.patch(`/nios/chapters/${item.id}/activate`);
+      else if (level === 3) await client.patch(`/nios/resources/${item.id}/activate`);
       toast.success('Activated.');
       load();
     } catch (err) {
@@ -223,7 +201,7 @@ export default function NIOSCurriculumPage() {
     setCreateSubjectSaving(true);
     try {
       const res = await client.post('/nios/subjects', createSubjectForm);
-      await client.post('/nios/batch-subjects', { nios_batch_id: batch, nios_subject_id: res.data.id });
+      await client.post('/nios/university-subjects', { nios_university_id: uni, nios_subject_id: res.data.id });
       toast.success('Subject created and assigned.');
       setCreateSubjectOpen(false);
       setCreateSubjectForm({ name: '', subject_code: '' });
@@ -237,39 +215,31 @@ export default function NIOSCurriculumPage() {
 
   // ── Page titles / labels ──────────────────────────────────────────────────
 
-  const pageTitles = ['NIOS Universities', 'Batches', 'Subjects', 'Chapters', 'Resources'];
-  const addLabels  = [null, '+ Add Batch', '+ Assign Subject', '+ Add Chapter', '+ Add Resource'];
+  const pageTitles = ['NIOS Universities', 'Subjects', 'Chapters', 'Resources'];
+  const addLabels  = [null, '+ Assign Subject', '+ Add Chapter', '+ Add Resource'];
   const canAdd = level >= 1;
-
-  // ── Breadcrumb ────────────────────────────────────────────────────────────
 
   const crumbs = [
     { label: 'NIOS', onClick: () => goToLevel(0) },
     uni     && { label: uni_label,     onClick: () => goToLevel(1) },
-    batch   && { label: batch_label,   onClick: () => goToLevel(2) },
-    subject && { label: subject_label, onClick: () => goToLevel(3) },
-    chapter && { label: chapter_label, onClick: () => goToLevel(4) },
+    subject && { label: subject_label, onClick: () => goToLevel(2) },
+    chapter && { label: chapter_label, onClick: () => goToLevel(3) },
   ].filter(Boolean);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
           <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
             {pageTitles[level]}
           </h1>
-          {/* Breadcrumb */}
           <div className="flex items-center gap-1 mt-1 flex-wrap">
             {crumbs.map((c, i) => (
               <span key={i} className="flex items-center gap-1">
                 {i > 0 && <span className="text-slate-400">/</span>}
-                <button
-                  onClick={c.onClick}
-                  className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline"
-                >
+                <button onClick={c.onClick} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">
                   {c.label}
                 </button>
               </span>
@@ -277,7 +247,7 @@ export default function NIOSCurriculumPage() {
           </div>
         </div>
         <div className="flex gap-2">
-          {level === 2 && (
+          {level === 1 && (
             <Button variant="outline" size="sm" onClick={() => { setCreateSubjectOpen(true); setCreateSubjectForm({ name: '', subject_code: '' }); }}>
               + New Subject
             </Button>
@@ -288,7 +258,6 @@ export default function NIOSCurriculumPage() {
         </div>
       </div>
 
-      {/* List */}
       {loading ? (
         <p className="text-sm text-slate-500">Loading…</p>
       ) : items.length === 0 ? (
@@ -298,39 +267,29 @@ export default function NIOSCurriculumPage() {
           {items.map((item) => (
             <div
               key={item.id}
-              className={`flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-4 py-3 group ${level < 4 ? 'cursor-pointer hover:border-indigo-400' : ''}`}
-              onClick={level < 4 ? () => {
+              className={`flex items-center justify-between rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-4 py-3 group ${level < 3 ? 'cursor-pointer hover:border-indigo-400' : ''}`}
+              onClick={level < 3 ? () => {
                 const label =
                   level === 0 ? item.name :
-                  level === 1 ? item.name :
-                  level === 2 ? item.subject_name :
-                  level === 3 ? item.title : '';
-                const id =
-                  level === 0 ? item.id :
-                  level === 1 ? item.id :
-                  level === 2 ? item.id :      // nios_batch_subject id
-                  level === 3 ? item.id : item.id;
-                const paramKey = PARAM_ORDER[level];
-                drillInto(paramKey, id, label);
+                  level === 1 ? item.subject_name :
+                  level === 2 ? item.title : '';
+                drillInto(PARAM_ORDER[level], item.id, label);
               } : undefined}
             >
               <div className="min-w-0">
                 <p className={`text-sm font-medium ${item.is_active === false || item.subject_active === false ? 'line-through text-slate-400' : 'text-slate-900 dark:text-slate-100'}`}>
-                  {level === 2 ? item.subject_name :
+                  {level === 1 ? item.subject_name :
+                   level === 2 ? item.title :
                    level === 3 ? item.title :
-                   level === 4 ? item.title :
                    item.name}
                 </p>
-                {level === 1 && item.year && (
-                  <p className="text-xs text-slate-500 mt-0.5">{item.year}</p>
-                )}
-                {level === 2 && item.subject_code && (
+                {level === 1 && item.subject_code && (
                   <p className="text-xs text-slate-500 mt-0.5">{item.subject_code}</p>
                 )}
-                {level === 3 && item.description && (
+                {level === 2 && item.description && (
                   <p className="text-xs text-slate-500 mt-0.5 truncate max-w-lg">{item.description}</p>
                 )}
-                {level === 4 && (
+                {level === 3 && (
                   <div className="flex items-center gap-2 mt-1">
                     <Badge variant="outline" className="text-xs capitalize">
                       {RESOURCE_LABELS[item.type] || item.type}
@@ -346,7 +305,8 @@ export default function NIOSCurriculumPage() {
               </div>
 
               <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
-                {level > 0 && level !== 2 && (level !== 1 || isAdmin()) && (
+                {/* Edit only for chapters / resources */}
+                {(level === 2 || level === 3) && (
                   <button
                     onClick={() => openEdit(item)}
                     className="text-xs text-slate-500 hover:text-indigo-600 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -354,7 +314,8 @@ export default function NIOSCurriculumPage() {
                     Edit
                   </button>
                 )}
-                {level >= 1 && (level > 2 || isAdmin()) && (
+                {/* Remove subject is admin-only; chapters/resources are open */}
+                {(level > 1 || isAdmin()) && (
                   item.is_active === false || item.subject_active === false ? (
                     <button
                       onClick={() => handleActivate(item)}
@@ -367,7 +328,7 @@ export default function NIOSCurriculumPage() {
                       onClick={() => handleDeactivate(item)}
                       className="text-xs text-red-500 hover:underline opacity-0 group-hover:opacity-100 transition-opacity"
                     >
-                      {level === 2 ? 'Remove' : 'Deactivate'}
+                      {level === 1 ? 'Remove' : 'Deactivate'}
                     </button>
                   )
                 )}
@@ -383,32 +344,13 @@ export default function NIOSCurriculumPage() {
           <DialogHeader>
             <DialogTitle>
               {editing ? 'Edit' : 'Add'}{' '}
-              {level === 1 ? 'Batch' : level === 2 ? 'Subject' : level === 3 ? 'Chapter' : 'Resource'}
+              {level === 1 ? 'Subject' : level === 2 ? 'Chapter' : 'Resource'}
             </DialogTitle>
           </DialogHeader>
 
           <div className="space-y-4 py-2">
-            {/* Level 1: Batch */}
-            {level === 1 && (
-              <>
-                <div className="space-y-1">
-                  <Label>Batch Name *</Label>
-                  <Input value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Science Group" />
-                </div>
-                <div className="space-y-1">
-                  <Label>Year *</Label>
-                  <Select value={form.year || ''} onValueChange={(v) => setForm({ ...form, year: v })}>
-                    <SelectTrigger className="w-full"><SelectValue placeholder="Select year…" /></SelectTrigger>
-                    <SelectContent>
-                      {YEAR_OPTIONS.map((y) => <SelectItem key={y} value={y}>{y}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </>
-            )}
-
-            {/* Level 2: Assign existing subject */}
-            {level === 2 && !editing && (
+            {/* Level 1: Assign existing subject */}
+            {level === 1 && !editing && (
               <div className="space-y-1">
                 <Label>Select Subject *</Label>
                 <Select value={form.nios_subject_id || ''} onValueChange={(v) => setForm({ ...form, nios_subject_id: v })}>
@@ -424,8 +366,8 @@ export default function NIOSCurriculumPage() {
               </div>
             )}
 
-            {/* Level 3: Chapter */}
-            {level === 3 && (
+            {/* Level 2: Chapter */}
+            {level === 2 && (
               <>
                 <div className="space-y-1">
                   <Label>Title *</Label>
@@ -442,8 +384,8 @@ export default function NIOSCurriculumPage() {
               </>
             )}
 
-            {/* Level 4: Resource */}
-            {level === 4 && (
+            {/* Level 3: Resource */}
+            {level === 3 && (
               <>
                 <div className="space-y-1">
                   <Label>Type *</Label>

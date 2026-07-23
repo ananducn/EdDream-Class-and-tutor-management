@@ -8,8 +8,6 @@ import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Switch } from '@/components/ui/switch';
-import { Separator } from '@/components/ui/separator';
 import { Textarea } from '@/components/ui/textarea';
 import StatusBadge from '@/components/StatusBadge';
 import { useAuth } from '@/context/AuthContext';
@@ -34,17 +32,11 @@ const emptyForm = {
   nios_university_id: '', nios_batch_id: '', nios_chapter_ids: [],
   class_status: 'scheduled',
   unit_chapter: '', class_mode: '', platform_used: '', notes: '',
-  is_recorded: false, recording_file_name: '', recording_duration: '',
-  storage_location: '', recording_link: '', backup_available: false,
-  upload_student_app: false, upload_student_app_date: '', upload_student_app_link: '',
-  upload_youtube: false, upload_youtube_date: '', upload_youtube_link: '', youtube_privacy: '',
-  upload_gdrive: false, upload_gdrive_link: '',
-  upload_harddisk: false, upload_harddisk_location: '',
 };
 
 const emptyFilters = {
   date_from: '', date_to: '', faculty_id: '', nios_university_id: '',
-  year: '', nios_batch_id: '', nios_subject_id: '', class_mode: '', is_recorded: '',
+  year: '', nios_batch_id: '', nios_subject_id: '', class_mode: '',
   class_status: '',
 };
 
@@ -88,7 +80,6 @@ export default function NIOSClassesPage() {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [recordedInfo, setRecordedInfo] = useState({}); // { [chapterId]: recordingRow } for already-recorded chapters
 
   async function loadDropdowns() {
     const [fRes, uRes, bRes, sRes] = await Promise.all([
@@ -144,51 +135,42 @@ export default function NIOSClassesPage() {
     setFilterSubjects(allSubjects);
   }
 
-  async function handleFilterBatchChange(v) {
-    setFilters({ ...filters, nios_batch_id: v, nios_subject_id: '' });
-    if (v) {
-      try {
-        const res = await client.get('/nios/batch-subjects', { params: { nios_batch_id: v } });
-        setFilterSubjects(res.data.map((bs) => ({ id: bs.nios_subject_id, name: bs.subject_name })));
-      } catch { setFilterSubjects(allSubjects); }
-    } else {
-      setFilterSubjects(allSubjects);
-    }
+  function handleFilterBatchChange(v) {
+    // Subjects are university-level now, so the batch filter no longer narrows
+    // the subject list.
+    setFilters({ ...filters, nios_batch_id: v });
   }
 
   // ── Form cascade ──────────────────────────────────────────────────────────
 
-  function handleFormUniChange(v) {
+  // The syllabus (subjects → chapters) belongs to the university now, so choosing
+  // a university loads the subject list; the batch is just the cohort.
+  async function handleFormUniChange(v) {
     setForm({ ...form, nios_university_id: v, nios_batch_id: '', nios_chapter_ids: [] });
     setFormBatches(v ? allBatches.filter((b) => String(b.nios_university_id) === v) : allBatches);
     setFormBatchSubjects([]);
     setChaptersBySubject({});
     setPickerSubject('');
-    setRecordedInfo({});
-  }
-
-  async function handleFormBatchChange(v) {
-    setForm((f) => ({ ...f, nios_batch_id: v, nios_chapter_ids: [] }));
-    setFormBatchSubjects([]);
-    setChaptersBySubject({});
-    setPickerSubject('');
-    setRecordedInfo({});
     if (v) {
       try {
-        const res = await client.get('/nios/batch-subjects', { params: { nios_batch_id: v } });
+        const res = await client.get('/nios/university-subjects', { params: { nios_university_id: v } });
         setFormBatchSubjects(res.data);
       } catch { /**/ }
     }
   }
 
-  // Load (once) and cache the chapters for a given subject in this batch
+  function handleFormBatchChange(v) {
+    setForm((f) => ({ ...f, nios_batch_id: v }));
+  }
+
+  // Load (once) and cache the chapters for a given subject in this university
   async function loadChaptersForSubject(subjectId, current) {
     const map = current || chaptersBySubject;
     if (!subjectId || map[subjectId]) return;
-    const bs = formBatchSubjects.find((s) => String(s.nios_subject_id) === String(subjectId));
-    if (!bs) return;
+    const us = formBatchSubjects.find((s) => String(s.nios_subject_id) === String(subjectId));
+    if (!us) return;
     try {
-      const res = await client.get('/nios/chapters', { params: { nios_batch_subject_id: bs.id } });
+      const res = await client.get('/nios/chapters', { params: { nios_university_subject_id: us.id } });
       setChaptersBySubject((prev) => ({ ...prev, [subjectId]: res.data }));
     } catch { /**/ }
   }
@@ -198,22 +180,13 @@ export default function NIOSClassesPage() {
     await loadChaptersForSubject(subjectId);
   }
 
-  async function toggleChapter(chapterId) {
+  function toggleChapter(chapterId) {
     const id = String(chapterId);
     const has = form.nios_chapter_ids.includes(id);
     setForm((f) => ({
       ...f,
       nios_chapter_ids: has ? f.nios_chapter_ids.filter((x) => x !== id) : [...f.nios_chapter_ids, id],
     }));
-    if (has) {
-      setRecordedInfo((prev) => { const n = { ...prev }; delete n[id]; return n; });
-    } else if (!editing) {
-      // Warn if this chapter already has a recording elsewhere
-      try {
-        const res = await client.get('/nios/classes', { params: { nios_chapter_id: id, is_recorded: 'true' } });
-        if (res.data.length > 0) setRecordedInfo((prev) => ({ ...prev, [id]: res.data[0] }));
-      } catch { /* non-critical */ }
-    }
   }
 
   // Flat lookup of chapter id -> { title, subject_name } across loaded subjects
@@ -240,7 +213,6 @@ export default function NIOSClassesPage() {
   function openAdd() {
     setEditing(null);
     setForm(emptyForm);
-    setRecordedInfo({});
     setFormBatches(allBatches);
     setFormBatchSubjects([]);
     setChaptersBySubject({});
@@ -266,44 +238,26 @@ export default function NIOSClassesPage() {
       class_mode: c.class_mode || '',
       platform_used: c.platform_used || '',
       notes: c.notes || '',
-      is_recorded: c.is_recorded || false,
-      recording_file_name: c.recording_file_name || '',
-      recording_duration: c.recording_duration || '',
-      storage_location: c.storage_location || '',
-      recording_link: c.recording_link || '',
-      backup_available: c.backup_available || false,
-      upload_student_app: c.upload_student_app || false,
-      upload_student_app_date: c.upload_student_app_date?.slice(0, 10) || '',
-      upload_student_app_link: c.upload_student_app_link || '',
-      upload_youtube: c.upload_youtube || false,
-      upload_youtube_date: c.upload_youtube_date?.slice(0, 10) || '',
-      upload_youtube_link: c.upload_youtube_link || '',
-      youtube_privacy: c.youtube_privacy || '',
-      upload_gdrive: c.upload_gdrive || false,
-      upload_gdrive_link: c.upload_gdrive_link || '',
-      upload_harddisk: c.upload_harddisk || false,
-      upload_harddisk_location: c.upload_harddisk_location || '',
     });
 
-    setRecordedInfo({});
     setFormBatches(c.nios_university_id ? allBatches.filter((b) => String(b.nios_university_id) === String(c.nios_university_id)) : allBatches);
     setFormBatchSubjects([]);
     setChaptersBySubject({});
     setPickerSubject('');
 
-    if (c.nios_batch_id) {
+    if (c.nios_university_id) {
       try {
-        const bsRes = await client.get('/nios/batch-subjects', { params: { nios_batch_id: c.nios_batch_id } });
-        setFormBatchSubjects(bsRes.data);
+        const usRes = await client.get('/nios/university-subjects', { params: { nios_university_id: c.nios_university_id } });
+        setFormBatchSubjects(usRes.data);
 
         // Preload chapters for every subject this class already covers so the
         // selected-chapter chips resolve to names.
         const subjectIds = [...new Set((c.chapters || []).map((ch) => ch.nios_subject_id).filter(Boolean))];
         const map = {};
         for (const subjectId of subjectIds) {
-          const bs = bsRes.data.find((s) => String(s.nios_subject_id) === String(subjectId));
-          if (bs) {
-            const chapRes = await client.get('/nios/chapters', { params: { nios_batch_subject_id: bs.id } });
+          const us = usRes.data.find((s) => String(s.nios_subject_id) === String(subjectId));
+          if (us) {
+            const chapRes = await client.get('/nios/chapters', { params: { nios_university_subject_id: us.id } });
             map[subjectId] = chapRes.data;
           }
         }
@@ -356,7 +310,6 @@ export default function NIOSClassesPage() {
     }
   }
 
-  function f(v) { return (s) => setForm({ ...form, [v]: s }); }
 
   async function handleDelete() {
     if (!deleteTarget) return;
@@ -439,16 +392,6 @@ export default function NIOSClassesPage() {
               </Select>
             </div>
             <div className="space-y-1">
-              <Label>Recording</Label>
-              <Select value={filters.is_recorded} onValueChange={(v) => setFilters({ ...filters, is_recorded: v })}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="true">Recorded</SelectItem>
-                  <SelectItem value="false">Not Recorded</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
               <Label>Status</Label>
               <Select value={filters.class_status} onValueChange={(v) => setFilters({ ...filters, class_status: v })}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
@@ -490,7 +433,6 @@ export default function NIOSClassesPage() {
                 <TableHead className={TH}>Batch</TableHead>
                 <TableHead className={TH}>Hours</TableHead>
                 <TableHead className={TH}>Mode</TableHead>
-                <TableHead className={TH}>Recorded</TableHead>
                 <TableHead className={TH}>Status</TableHead>
                 <TableHead className={`${TH} text-right`}>Actions</TableHead>
               </TableRow>
@@ -516,7 +458,6 @@ export default function NIOSClassesPage() {
                   <TableCell>{c.batch_name || '—'}</TableCell>
                   <TableCell>{c.total_hours || '—'}</TableCell>
                   <TableCell>{c.class_mode ? <StatusBadge status={c.class_mode} /> : '—'}</TableCell>
-                  <TableCell><StatusBadge status={c.is_recorded ? 'recorded' : 'not_recorded'} /></TableCell>
                   <TableCell>
                     <Select value={c.class_status || 'scheduled'} onValueChange={(v) => quickSetStatus(c, v)}>
                       <SelectTrigger className="h-7 w-32 text-xs"><SelectValue /></SelectTrigger>
@@ -566,16 +507,6 @@ export default function NIOSClassesPage() {
                 ['Platform', viewDialog.platform_used],
                 ['Unit/Chapter', viewDialog.unit_chapter],
                 ['Notes', viewDialog.notes],
-                ['Recorded', viewDialog.is_recorded ? 'Yes' : 'No'],
-                ['Recording File', viewDialog.recording_file_name],
-                ['Duration', viewDialog.recording_duration],
-                ['Storage', viewDialog.storage_location],
-                ['Recording Link', viewDialog.recording_link],
-                ['Backup', viewDialog.backup_available ? 'Yes' : 'No'],
-                ['Student App', viewDialog.upload_student_app ? 'Uploaded' : 'No'],
-                ['YouTube', viewDialog.upload_youtube ? 'Uploaded' : 'No'],
-                ['Google Drive', viewDialog.upload_gdrive ? 'Uploaded' : 'No'],
-                ['Hard Disk', viewDialog.upload_harddisk ? 'Yes' : 'No'],
               ].map(([label, val]) => val !== null && val !== undefined && val !== '' && (
                 <div key={label} className="flex gap-2">
                   <span className="font-medium text-slate-700 dark:text-slate-300 w-32 shrink-0">{label}:</span>
@@ -726,138 +657,6 @@ export default function NIOSClassesPage() {
                   <Label>Notes</Label>
                   <Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} rows={2} />
                 </div>
-              </div>
-            </div>
-
-            <Separator />
-
-            <div className="space-y-3">
-              <p className="text-sm font-medium text-slate-900 dark:text-slate-100">Recording</p>
-              {Object.keys(recordedInfo).length > 0 && (
-                <div className="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950 p-3 space-y-1">
-                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-amber-100 dark:bg-amber-900 text-amber-800 dark:text-amber-200">Already Recorded</span>
-                  <p className="text-xs text-slate-600 dark:text-slate-300">A recording already exists for:</p>
-                  <ul className="text-xs text-slate-700 dark:text-slate-200 list-disc pl-4">
-                    {Object.keys(recordedInfo).map((id) => {
-                      const { title, subject_name } = chapterLabel(id);
-                      const rec = recordedInfo[id];
-                      return <li key={id}>{subject_name ? `${subject_name}: ` : ''}{title}{rec?.recording_file_name ? ` — ${rec.recording_file_name}` : ''}</li>;
-                    })}
-                  </ul>
-                </div>
-              )}
-              <div className="flex items-center gap-3">
-                <Switch checked={form.is_recorded} onCheckedChange={f('is_recorded')} id="is_recorded" />
-                <Label htmlFor="is_recorded">Was this class recorded?</Label>
-              </div>
-              {form.is_recorded && (
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1">
-                    <Label>File Name</Label>
-                    <Input value={form.recording_file_name} onChange={(e) => setForm({ ...form, recording_file_name: e.target.value })} />
-                  </div>
-                  <div className="space-y-1">
-                    <Label>Duration</Label>
-                    <Input value={form.recording_duration} onChange={(e) => setForm({ ...form, recording_duration: e.target.value })} placeholder="e.g. 1h 30m" />
-                  </div>
-                  <div className="space-y-1">
-                    <Label>Storage Location</Label>
-                    <Input value={form.storage_location} onChange={(e) => setForm({ ...form, storage_location: e.target.value })} />
-                  </div>
-                  <div className="space-y-1">
-                    <Label>Recording Link</Label>
-                    <Input value={form.recording_link} onChange={(e) => setForm({ ...form, recording_link: e.target.value })} />
-                  </div>
-                  <div className="flex items-center gap-3 col-span-2">
-                    <Switch checked={form.backup_available} onCheckedChange={f('backup_available')} id="backup" />
-                    <Label htmlFor="backup">Backup Available</Label>
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <Separator />
-
-            <div className="space-y-3">
-              <p className="text-sm font-medium text-slate-900 dark:text-slate-100">Upload Status</p>
-
-              <div className="space-y-2">
-                <div className="flex items-center gap-3">
-                  <Switch checked={form.upload_student_app} onCheckedChange={f('upload_student_app')} id="stu_app" />
-                  <Label htmlFor="stu_app">Student App</Label>
-                </div>
-                {form.upload_student_app && (
-                  <div className="grid grid-cols-2 gap-3 pl-9">
-                    <div className="space-y-1">
-                      <Label>Upload Date</Label>
-                      <Input type="date" value={form.upload_student_app_date} onChange={(e) => setForm({ ...form, upload_student_app_date: e.target.value })} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label>Link</Label>
-                      <Input value={form.upload_student_app_link} onChange={(e) => setForm({ ...form, upload_student_app_link: e.target.value })} />
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center gap-3">
-                  <Switch checked={form.upload_youtube} onCheckedChange={f('upload_youtube')} id="yt" />
-                  <Label htmlFor="yt">YouTube</Label>
-                </div>
-                {form.upload_youtube && (
-                  <div className="grid grid-cols-2 gap-3 pl-9">
-                    <div className="space-y-1">
-                      <Label>Upload Date</Label>
-                      <Input type="date" value={form.upload_youtube_date} onChange={(e) => setForm({ ...form, upload_youtube_date: e.target.value })} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label>Link</Label>
-                      <Input value={form.upload_youtube_link} onChange={(e) => setForm({ ...form, upload_youtube_link: e.target.value })} />
-                    </div>
-                    <div className="space-y-1 col-span-2">
-                      <Label>Privacy</Label>
-                      <Select value={form.youtube_privacy} onValueChange={(v) => setForm({ ...form, youtube_privacy: v })}>
-                        <SelectTrigger className="w-full sm:w-48"><SelectValue placeholder="Select" /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="public">Public</SelectItem>
-                          <SelectItem value="unlisted">Unlisted</SelectItem>
-                          <SelectItem value="private">Private</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center gap-3">
-                  <Switch checked={form.upload_gdrive} onCheckedChange={f('upload_gdrive')} id="gdrive" />
-                  <Label htmlFor="gdrive">Google Drive</Label>
-                </div>
-                {form.upload_gdrive && (
-                  <div className="pl-9">
-                    <div className="space-y-1">
-                      <Label>Drive Link</Label>
-                      <Input value={form.upload_gdrive_link} onChange={(e) => setForm({ ...form, upload_gdrive_link: e.target.value })} />
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center gap-3">
-                  <Switch checked={form.upload_harddisk} onCheckedChange={f('upload_harddisk')} id="hdd" />
-                  <Label htmlFor="hdd">Hard Disk</Label>
-                </div>
-                {form.upload_harddisk && (
-                  <div className="pl-9">
-                    <div className="space-y-1">
-                      <Label>Location</Label>
-                      <Input value={form.upload_harddisk_location} onChange={(e) => setForm({ ...form, upload_harddisk_location: e.target.value })} />
-                    </div>
-                  </div>
-                )}
               </div>
             </div>
 
