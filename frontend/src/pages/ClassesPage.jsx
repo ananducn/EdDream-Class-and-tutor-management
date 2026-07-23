@@ -8,8 +8,6 @@ import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Switch } from '@/components/ui/switch';
-import { Separator } from '@/components/ui/separator';
 import { Textarea } from '@/components/ui/textarea';
 import StatusBadge from '@/components/StatusBadge';
 import { useAuth } from '@/context/AuthContext';
@@ -21,17 +19,11 @@ const emptyForm = {
   academic_year_id: '', semester_id: '', chapter_id: '',
   class_status: 'scheduled',
   unit_chapter: '', class_mode: '', platform_used: '', notes: '',
-  is_recorded: false, recording_file_name: '', recording_duration: '',
-  storage_location: '', recording_link: '', backup_available: false,
-  upload_student_app: false, upload_student_app_date: '', upload_student_app_link: '',
-  upload_youtube: false, upload_youtube_date: '', upload_youtube_link: '', youtube_privacy: '',
-  upload_gdrive: false, upload_gdrive_link: '',
-  upload_harddisk: false, upload_harddisk_location: '',
 };
 
 const emptyFilters = {
   date_from: '', date_to: '', faculty_id: '', subject_id: '', university_id: '',
-  batch_id: '', class_mode: '', is_recorded: '', class_status: '',
+  batch_id: '', class_mode: '', class_status: '',
 };
 
 function calcHours(start, end) {
@@ -68,7 +60,6 @@ export default function ClassesPage() {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [chapterRecording, setChapterRecording] = useState(null);
 
   async function loadDropdowns() {
     const [fRes, sRes, uRes, bRes, stRes] = await Promise.all([
@@ -122,18 +113,19 @@ export default function ClassesPage() {
     setFormAcademicYears([]); setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
   }
 
-  function handleFormStreamChange(v) {
+  // The syllabus (years → chapters) belongs to the STREAM now, so the curriculum
+  // cascade hangs off the stream. Batch is chosen separately as the cohort.
+  async function handleFormStreamChange(v) {
     setForm({ ...form, stream_id: v, batch_id: '', academic_year_id: '', semester_id: '', subject_id: '', chapter_id: '' });
     setFormBatches(v ? batches.filter((b) => String(b.stream_id) === v) : batches.filter((b) => String(b.university_id) === form.university_id));
     setFormAcademicYears([]); setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
+    if (v) {
+      try { const res = await client.get(`/academic-years?stream_id=${v}`); setFormAcademicYears(res.data); } catch { /**/ }
+    }
   }
 
-  async function handleFormBatchChange(v) {
-    setForm((f) => ({ ...f, batch_id: v, academic_year_id: '', semester_id: '', subject_id: '', chapter_id: '' }));
-    setFormAcademicYears([]); setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
-    if (v) {
-      try { const res = await client.get(`/academic-years?batch_id=${v}`); setFormAcademicYears(res.data); } catch { /**/ }
-    }
+  function handleFormBatchChange(v) {
+    setForm((f) => ({ ...f, batch_id: v }));
   }
 
   async function handleFormYearChange(v) {
@@ -169,15 +161,8 @@ export default function ClassesPage() {
     }
   }
 
-  async function handleFormChapterChange(v) {
-    if (editing) { setForm((f) => ({ ...f, chapter_id: v })); return; }
+  function handleFormChapterChange(v) {
     setForm((f) => ({ ...f, chapter_id: v }));
-    setChapterRecording(null);
-    if (!v) return;
-    try {
-      const res = await client.get('/classes', { params: { chapter_id: v, is_recorded: 'true' } });
-      if (res.data.length > 0) setChapterRecording(res.data[0]);
-    } catch { /* non-critical */ }
   }
 
   function handleTimeChange(field, value) {
@@ -192,7 +177,6 @@ export default function ClassesPage() {
   function openAdd() {
     setEditing(null);
     setForm(emptyForm);
-    setChapterRecording(null);
     setFormStreams(streams);
     setFormBatches(batches);
     setFormAcademicYears([]); setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
@@ -219,26 +203,8 @@ export default function ClassesPage() {
       class_mode: c.class_mode || '',
       platform_used: c.platform_used || '',
       notes: c.notes || '',
-      is_recorded: c.is_recorded || false,
-      recording_file_name: c.recording_file_name || '',
-      recording_duration: c.recording_duration || '',
-      storage_location: c.storage_location || '',
-      recording_link: c.recording_link || '',
-      backup_available: c.backup_available || false,
-      upload_student_app: c.upload_student_app || false,
-      upload_student_app_date: c.upload_student_app_date?.slice(0, 10) || '',
-      upload_student_app_link: c.upload_student_app_link || '',
-      upload_youtube: c.upload_youtube || false,
-      upload_youtube_date: c.upload_youtube_date?.slice(0, 10) || '',
-      upload_youtube_link: c.upload_youtube_link || '',
-      youtube_privacy: c.youtube_privacy || '',
-      upload_gdrive: c.upload_gdrive || false,
-      upload_gdrive_link: c.upload_gdrive_link || '',
-      upload_harddisk: c.upload_harddisk || false,
-      upload_harddisk_location: c.upload_harddisk_location || '',
     });
 
-    setChapterRecording(null);
     setFormStreams(c.university_id ? streams.filter((s) => String(s.university_id) === String(c.university_id)) : streams);
     setFormBatches(
       c.stream_id ? batches.filter((b) => String(b.stream_id) === String(c.stream_id))
@@ -247,9 +213,9 @@ export default function ClassesPage() {
     );
     setFormAcademicYears([]); setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
 
-    if (c.batch_id) {
+    if (c.stream_id) {
       try {
-        const ayRes = await client.get(`/academic-years?batch_id=${c.batch_id}`);
+        const ayRes = await client.get(`/academic-years?stream_id=${c.stream_id}`);
         setFormAcademicYears(ayRes.data);
 
         if (c.academic_year_id) {
@@ -327,7 +293,6 @@ export default function ClassesPage() {
     }
   }
 
-  function f(v) { return (s) => setForm({ ...form, [v]: s }); }
 
   async function handleDelete() {
     if (!deleteTarget) return;
@@ -409,16 +374,6 @@ export default function ClassesPage() {
               </Select>
             </div>
             <div className="space-y-1">
-              <Label>Recording</Label>
-              <Select value={filters.is_recorded} onValueChange={(v) => setFilters({ ...filters, is_recorded: v })}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="true">Recorded</SelectItem>
-                  <SelectItem value="false">Not Recorded</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-1">
               <Label>Status</Label>
               <Select value={filters.class_status} onValueChange={(v) => setFilters({ ...filters, class_status: v })}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
@@ -454,7 +409,6 @@ export default function ClassesPage() {
                 <TableHead className={TH}>Batch</TableHead>
                 <TableHead className={TH}>Hours</TableHead>
                 <TableHead className={TH}>Mode</TableHead>
-                <TableHead className={TH}>Recorded</TableHead>
                 <TableHead className={TH}>Status</TableHead>
                 <TableHead className={`${TH} text-right`}>Actions</TableHead>
               </TableRow>
@@ -478,9 +432,6 @@ export default function ClassesPage() {
                   <TableCell>{c.total_hours || '—'}</TableCell>
                   <TableCell>
                     {c.class_mode ? <StatusBadge status={c.class_mode} /> : '—'}
-                  </TableCell>
-                  <TableCell>
-                    <StatusBadge status={c.is_recorded ? 'recorded' : 'not_recorded'} />
                   </TableCell>
                   <TableCell>
                     <Select value={c.class_status || 'scheduled'} onValueChange={(v) => quickSetStatus(c, v)}>
@@ -534,16 +485,6 @@ export default function ClassesPage() {
                 ['Platform', viewDialog.platform_used],
                 ['Unit/Chapter', viewDialog.unit_chapter],
                 ['Notes', viewDialog.notes],
-                ['Recorded', viewDialog.is_recorded ? 'Yes' : 'No'],
-                ['Recording File', viewDialog.recording_file_name],
-                ['Duration', viewDialog.recording_duration],
-                ['Storage', viewDialog.storage_location],
-                ['Recording Link', viewDialog.recording_link],
-                ['Backup', viewDialog.backup_available ? 'Yes' : 'No'],
-                ['Student App', viewDialog.upload_student_app ? 'Uploaded' : 'No'],
-                ['YouTube', viewDialog.upload_youtube ? 'Uploaded' : 'No'],
-                ['Google Drive', viewDialog.upload_gdrive ? 'Uploaded' : 'No'],
-                ['Hard Disk', viewDialog.upload_harddisk ? 'Yes' : 'No'],
               ].map(([label, val]) => val !== null && val !== undefined && val !== '' && (
                 <div key={label} className="flex gap-2">
                   <span className="font-medium text-slate-700 dark:text-slate-300 w-32 shrink-0">{label}:</span>
@@ -634,7 +575,7 @@ export default function ClassesPage() {
                 </div>
                 <div className="space-y-1">
                   <Label>Academic Year *</Label>
-                  <Select value={form.academic_year_id} onValueChange={handleFormYearChange} disabled={!form.batch_id}>
+                  <Select value={form.academic_year_id} onValueChange={handleFormYearChange} disabled={!form.stream_id}>
                     <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
                     <SelectContent>{formAcademicYears.map((ay) => <SelectItem key={ay.id} value={String(ay.id)}>{ay.name}</SelectItem>)}</SelectContent>
                   </Select>
@@ -693,145 +634,6 @@ export default function ClassesPage() {
                   <Label>Notes</Label>
                   <Textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} rows={2} />
                 </div>
-              </div>
-            </div>
-
-            <Separator />
-
-            <div className="space-y-3">
-              <p className="text-sm font-medium text-slate-900 dark:text-slate-100">Recording</p>
-              {chapterRecording ? (
-                <div className="rounded-lg border border-green-200 dark:border-green-800 bg-green-50 dark:bg-green-950 p-3 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200">Already Recorded</span>
-                    <span className="text-xs text-slate-500 dark:text-slate-400">A recording exists for this chapter</span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
-                    {chapterRecording.date && <><span className="text-slate-500 dark:text-slate-400">Date</span><span className="text-slate-900 dark:text-slate-100">{chapterRecording.date?.slice(0,10)}</span></>}
-                    {chapterRecording.faculty_name && <><span className="text-slate-500 dark:text-slate-400">Faculty</span><span className="text-slate-900 dark:text-slate-100">{chapterRecording.faculty_name}</span></>}
-                    {chapterRecording.recording_file_name && <><span className="text-slate-500 dark:text-slate-400">File</span><span className="text-slate-900 dark:text-slate-100 truncate">{chapterRecording.recording_file_name}</span></>}
-                    {chapterRecording.recording_duration && <><span className="text-slate-500 dark:text-slate-400">Duration</span><span className="text-slate-900 dark:text-slate-100">{chapterRecording.recording_duration}</span></>}
-                    {chapterRecording.storage_location && <><span className="text-slate-500 dark:text-slate-400">Storage</span><span className="text-slate-900 dark:text-slate-100">{chapterRecording.storage_location}</span></>}
-                    {chapterRecording.recording_link && <><span className="text-slate-500 dark:text-slate-400">Link</span><a href={chapterRecording.recording_link} target="_blank" rel="noreferrer" className="text-blue-600 dark:text-blue-400 truncate hover:underline">{chapterRecording.recording_link}</a></>}
-                    {chapterRecording.backup_available && <><span className="text-slate-500 dark:text-slate-400">Backup</span><span className="text-green-700 dark:text-green-300">Available</span></>}
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className="flex items-center gap-3">
-                    <Switch checked={form.is_recorded} onCheckedChange={f('is_recorded')} id="is_recorded" />
-                    <Label htmlFor="is_recorded">Was this class recorded?</Label>
-                  </div>
-                  {form.is_recorded && (
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="space-y-1">
-                        <Label>File Name</Label>
-                        <Input value={form.recording_file_name} onChange={(e) => setForm({ ...form, recording_file_name: e.target.value })} />
-                      </div>
-                      <div className="space-y-1">
-                        <Label>Duration</Label>
-                        <Input value={form.recording_duration} onChange={(e) => setForm({ ...form, recording_duration: e.target.value })} placeholder="e.g. 1h 30m" />
-                      </div>
-                      <div className="space-y-1">
-                        <Label>Storage Location</Label>
-                        <Input value={form.storage_location} onChange={(e) => setForm({ ...form, storage_location: e.target.value })} />
-                      </div>
-                      <div className="space-y-1">
-                        <Label>Recording Link</Label>
-                        <Input value={form.recording_link} onChange={(e) => setForm({ ...form, recording_link: e.target.value })} />
-                      </div>
-                      <div className="flex items-center gap-3 col-span-2">
-                        <Switch checked={form.backup_available} onCheckedChange={f('backup_available')} id="backup" />
-                        <Label htmlFor="backup">Backup Available</Label>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
-
-            <Separator />
-
-            <div className="space-y-3">
-              <p className="text-sm font-medium text-slate-900 dark:text-slate-100">Upload Status</p>
-
-              <div className="space-y-2">
-                <div className="flex items-center gap-3">
-                  <Switch checked={form.upload_student_app} onCheckedChange={f('upload_student_app')} id="stu_app" />
-                  <Label htmlFor="stu_app">Student App</Label>
-                </div>
-                {form.upload_student_app && (
-                  <div className="grid grid-cols-2 gap-3 pl-9">
-                    <div className="space-y-1">
-                      <Label>Upload Date</Label>
-                      <Input type="date" value={form.upload_student_app_date} onChange={(e) => setForm({ ...form, upload_student_app_date: e.target.value })} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label>Link</Label>
-                      <Input value={form.upload_student_app_link} onChange={(e) => setForm({ ...form, upload_student_app_link: e.target.value })} />
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center gap-3">
-                  <Switch checked={form.upload_youtube} onCheckedChange={f('upload_youtube')} id="yt" />
-                  <Label htmlFor="yt">YouTube</Label>
-                </div>
-                {form.upload_youtube && (
-                  <div className="grid grid-cols-2 gap-3 pl-9">
-                    <div className="space-y-1">
-                      <Label>Upload Date</Label>
-                      <Input type="date" value={form.upload_youtube_date} onChange={(e) => setForm({ ...form, upload_youtube_date: e.target.value })} />
-                    </div>
-                    <div className="space-y-1">
-                      <Label>Link</Label>
-                      <Input value={form.upload_youtube_link} onChange={(e) => setForm({ ...form, upload_youtube_link: e.target.value })} />
-                    </div>
-                    <div className="space-y-1 col-span-2">
-                      <Label>Privacy</Label>
-                      <Select value={form.youtube_privacy} onValueChange={(v) => setForm({ ...form, youtube_privacy: v })}>
-                        <SelectTrigger className="w-full sm:w-48"><SelectValue placeholder="Select" /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="public">Public</SelectItem>
-                          <SelectItem value="unlisted">Unlisted</SelectItem>
-                          <SelectItem value="private">Private</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center gap-3">
-                  <Switch checked={form.upload_gdrive} onCheckedChange={f('upload_gdrive')} id="gdrive" />
-                  <Label htmlFor="gdrive">Google Drive</Label>
-                </div>
-                {form.upload_gdrive && (
-                  <div className="pl-9">
-                    <div className="space-y-1">
-                      <Label>Drive Link</Label>
-                      <Input value={form.upload_gdrive_link} onChange={(e) => setForm({ ...form, upload_gdrive_link: e.target.value })} />
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <div className="flex items-center gap-3">
-                  <Switch checked={form.upload_harddisk} onCheckedChange={f('upload_harddisk')} id="hdd" />
-                  <Label htmlFor="hdd">Hard Disk</Label>
-                </div>
-                {form.upload_harddisk && (
-                  <div className="pl-9">
-                    <div className="space-y-1">
-                      <Label>Location</Label>
-                      <Input value={form.upload_harddisk_location} onChange={(e) => setForm({ ...form, upload_harddisk_location: e.target.value })} />
-                    </div>
-                  </div>
-                )}
               </div>
             </div>
 

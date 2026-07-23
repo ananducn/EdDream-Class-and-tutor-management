@@ -11,7 +11,7 @@ import StatusBadge from '@/components/StatusBadge';
 import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
 
-const emptyForm = { name: '', university_id: '', stream_id: '', copy_from_batch_id: '' };
+const emptyForm = { name: '', university_id: '', stream_id: '' };
 const emptyFilters = { search: '', university_id: '', stream_id: '', status: '' };
 
 export default function BatchesPage() {
@@ -24,7 +24,6 @@ export default function BatchesPage() {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const [filters, setFilters] = useState(emptyFilters);
-  const [streamBatches, setStreamBatches] = useState([]);
 
   // Stream options for the filter, derived from the loaded batches and scoped to
   // the selected university so the choices always match what's on screen.
@@ -76,7 +75,6 @@ export default function BatchesPage() {
     setEditing(null);
     setForm(emptyForm);
     setStreams([]);
-    setStreamBatches([]);
     setDialogOpen(true);
   }
 
@@ -86,28 +84,18 @@ export default function BatchesPage() {
       name: b.name,
       university_id: String(b.university_id),
       stream_id: b.stream_id ? String(b.stream_id) : '',
-      copy_from_batch_id: '',
     });
-    setStreamBatches([]);
     loadStreams(b.university_id);
     setDialogOpen(true);
   }
 
   function handleUniversityChange(v) {
-    setForm({ ...form, university_id: v, stream_id: '', copy_from_batch_id: '' });
-    setStreamBatches([]);
+    setForm({ ...form, university_id: v, stream_id: '' });
     loadStreams(v);
   }
 
-  async function handleStreamChange(v) {
-    setForm((f) => ({ ...f, stream_id: v, copy_from_batch_id: '' }));
-    setStreamBatches([]);
-    if (v) {
-      try {
-        const res = await client.get('/batches', { params: { stream_id: v } });
-        setStreamBatches(res.data);
-      } catch { /* non-critical */ }
-    }
+  function handleStreamChange(v) {
+    setForm((f) => ({ ...f, stream_id: v }));
   }
 
   async function handleSubmit(e) {
@@ -118,10 +106,8 @@ export default function BatchesPage() {
         await client.put(`/batches/${editing.id}`, form);
         toast.success('Batch updated.');
       } else {
-        const res = await client.post('/batches', form);
-        toast.success(res.data.copied
-          ? 'Batch created with full curriculum structure copied.'
-          : 'Batch created.');
+        await client.post('/batches', form);
+        toast.success('Batch created.');
       }
       setDialogOpen(false);
       load();
@@ -289,27 +275,12 @@ export default function BatchesPage() {
                 </SelectContent>
               </Select>
             </div>
-            {!editing && streamBatches.length > 0 && (
-              <div className="space-y-1">
-                <Label>Copy curriculum structure from</Label>
-                <Select value={form.copy_from_batch_id} onValueChange={(v) => setForm({ ...form, copy_from_batch_id: v })}>
-                  <SelectTrigger className="w-full">
-                    <SelectValue placeholder="None (start blank)" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {streamBatches.map((b) => (
-                      <SelectItem key={b.id} value={String(b.id)}>{b.name}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-slate-500 dark:text-slate-400">
-                  Copies academic years, semesters, subjects, chapters, and learning resources.
-                </p>
-              </div>
-            )}
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              The batch inherits its stream's syllabus and chapter recordings automatically — no copying needed.
+            </p>
             <DialogFooter>
               <Button type="submit" disabled={saving || !form.university_id || !form.stream_id}>
-                {saving ? (form.copy_from_batch_id ? 'Creating & copying…' : 'Saving...') : 'Save'}
+                {saving ? 'Saving...' : 'Save'}
               </Button>
             </DialogFooter>
           </form>

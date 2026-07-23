@@ -13,7 +13,7 @@ const PAGE_SIZE = 50;
 const EMPTY_FILTERS = {
   university_id: '', stream_id: '', batch_id: '', academic_year_id: '', semester_id: '', subject_id: '',
   faculty_id: '', date_from: '', date_to: '',
-  class_status: '', is_recorded: '',
+  class_status: '',
 };
 
 function pct(num, den) {
@@ -43,19 +43,6 @@ function StatCard({ label, value, sub, subLabel, color = 'slate' }) {
   );
 }
 
-function UploadDot({ active, label }) {
-  return (
-    <span
-      title={label}
-      className={`inline-flex items-center justify-center w-5 h-5 rounded text-xs font-bold
-        ${active
-          ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300'
-          : 'bg-slate-100 text-slate-400 dark:bg-slate-700 dark:text-slate-500'}`}
-    >
-      {label[0]}
-    </span>
-  );
-}
 
 const STATUS_STYLES = {
   taken:     'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
@@ -153,7 +140,6 @@ export default function ClassOverviewPage() {
     const simple = ['university_id','stream_id','batch_id','academic_year_id','semester_id','subject_id',
                      'faculty_id','date_from','date_to','class_status'];
     simple.forEach(k => { if (f[k]) q.set(k, f[k]); });
-    if (f.is_recorded !== '') q.set('is_recorded', f.is_recorded);
     return q.toString();
   }
 
@@ -322,16 +308,6 @@ export default function ClassOverviewPage() {
               </Select>
             </div>
 
-            <div className="space-y-1">
-              <Label className="text-xs">Recording</Label>
-              <Select value={filters.is_recorded} onValueChange={v => setFilters(f => ({ ...f, is_recorded: v }))}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="true">Recorded</SelectItem>
-                  <SelectItem value="false">Not Recorded</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
 
           </div>
 
@@ -374,43 +350,6 @@ export default function ClassOverviewPage() {
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <StatCard
-              label="Recorded"
-              value={summary.recorded}
-              sub={pct(summary.recorded, summary.taken)}
-              subLabel="of taken"
-              color="blue"
-            />
-            <StatCard
-              label="Not Recorded"
-              value={summary.not_recorded}
-              color="red"
-            />
-          </div>
-
-          {/* Upload strip */}
-          <Card>
-            <CardContent className="pt-4">
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
-                {[
-                  { key: 'upload_student_app', label: 'Student App' },
-                  { key: 'upload_youtube',     label: 'YouTube' },
-                  { key: 'upload_gdrive',      label: 'Google Drive' },
-                  { key: 'upload_harddisk',    label: 'Hard Disk' },
-                ].map(({ key, label }) => {
-                  const count = summary[key];
-                  return (
-                    <div key={key} className="space-y-0.5">
-                      <p className="text-xs text-slate-500 dark:text-slate-400">{label}</p>
-                      <p className="text-xl font-bold text-slate-900 dark:text-slate-100">{count}</p>
-                      <p className="text-xs text-slate-400">{pct(count, summary.recorded) ?? '—'} of recorded</p>
-                    </div>
-                  );
-                })}
-              </div>
-            </CardContent>
-          </Card>
         </>
       )}
 
@@ -441,8 +380,6 @@ export default function ClassOverviewPage() {
                         <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">University / Batch</TableHead>
                         <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Hrs</TableHead>
                         <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Status</TableHead>
-                        <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Rec</TableHead>
-                        <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Uploads</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -462,20 +399,6 @@ export default function ClassOverviewPage() {
                             <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_STYLES[cls.class_status] || 'bg-slate-100 text-slate-600'}`}>
                               {STATUS_LABELS[cls.class_status] || cls.class_status || '—'}
                             </span>
-                          </TableCell>
-                          <TableCell>
-                            {cls.is_recorded
-                              ? <span className="text-green-600 dark:text-green-400 font-bold text-base">✓</span>
-                              : <span className="text-slate-300 dark:text-slate-600 text-base">✗</span>
-                            }
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex items-center gap-0.5">
-                              <UploadDot active={cls.upload_student_app} label="SA" />
-                              <UploadDot active={cls.upload_youtube}     label="YT" />
-                              <UploadDot active={cls.upload_gdrive}      label="GD" />
-                              <UploadDot active={cls.upload_harddisk}    label="HD" />
-                            </div>
                           </TableCell>
                         </TableRow>
                       ))}

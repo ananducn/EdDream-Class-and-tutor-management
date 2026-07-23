@@ -22,7 +22,7 @@ const NAV_MAIN = [
   { to: '/reports',    label: 'Reports',    icon: faChartBar },
   { to: '/curriculum',      label: 'Curriculum',     icon: faGraduationCap },
   { to: '/class-overview',       label: 'Class Overview',       icon: faClipboardList },
-  { to: '/recording-overview',  label: 'Recording Overview',   icon: faVideo },
+  { to: '/recording-overview',  label: 'Recordings',   icon: faVideo },
 ];
 
 const NAV_SETTINGS = [
@@ -41,7 +41,7 @@ const NAV_NIOS = [
   { to: '/nios/curriculum',         label: 'NIOS Curriculum',         icon: faBookOpen },
   { to: '/nios/classes',            label: 'NIOS Classes',            icon: faChalkboardUser },
   { to: '/nios/timetable',          label: 'NIOS Timetable',          icon: faTableCells },
-  { to: '/nios/recording-overview', label: 'NIOS Recording Overview', icon: faVideo },
+  { to: '/nios/recording-overview', label: 'NIOS Recordings', icon: faVideo },
 ];
 
 // ── Sub-components ───────────────────────────────────────────────────────────
