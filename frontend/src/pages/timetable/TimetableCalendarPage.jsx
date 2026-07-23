@@ -127,7 +127,8 @@ export default function TimetableCalendarPage() {
     try {
       const [fRes, ayRes] = await Promise.all([
         client.get('/faculty'),
-        client.get(`/academic-years?batch_id=${batchId}`),
+        // Academic years belong to the stream now, not the batch.
+        client.get(`/academic-years?stream_id=${streamId}`),
       ]);
       setFaculty(fRes.data);
       setAcademicYears(ayRes.data);

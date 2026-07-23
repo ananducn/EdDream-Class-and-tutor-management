@@ -96,18 +96,19 @@ export default function ClassOverviewPage() {
     setBatches([]); setAcademicYears([]); setSemesters([]); setYearSubjects([]);
     if (v) {
       try {
-        const res = await client.get(`/batches?university_id=${uniId}&stream_id=${v}`);
-        setBatches(res.data);
+        // Academic years are stream-level now, so load them with the batches.
+        const [bRes, yRes] = await Promise.all([
+          client.get(`/batches?university_id=${uniId}&stream_id=${v}`),
+          client.get(`/academic-years?stream_id=${v}`),
+        ]);
+        setBatches(bRes.data);
+        setAcademicYears(yRes.data);
       } catch { /**/ }
     }
   }
 
-  async function onBatchChange(v) {
-    setFilters(f => ({ ...f, batch_id: v, academic_year_id: '', semester_id: '', subject_id: '' }));
-    setAcademicYears([]); setSemesters([]); setYearSubjects([]);
-    if (v) {
-      try { const res = await client.get(`/academic-years?batch_id=${v}`); setAcademicYears(res.data); } catch { /**/ }
-    }
+  function onBatchChange(v) {
+    setFilters(f => ({ ...f, batch_id: v }));
   }
 
   async function onYearChange(v) {

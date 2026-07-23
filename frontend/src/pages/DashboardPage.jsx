@@ -95,10 +95,10 @@ export default function DashboardPage() {
           <CardContent className="space-y-3">
             <p className="text-3xl font-bold text-slate-900 dark:text-slate-100">{data?.pending_uploads ?? 0}</p>
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              Classes that are recorded but not uploaded anywhere yet.
+              Chapters that are recorded but not uploaded to any destination yet.
             </p>
             <Button size="sm" asChild>
-              <Link to="/classes?is_recorded=true&upload_student_app=false">View Classes</Link>
+              <Link to="/recording-overview">Manage Recordings</Link>
             </Button>
           </CardContent>
         </Card>

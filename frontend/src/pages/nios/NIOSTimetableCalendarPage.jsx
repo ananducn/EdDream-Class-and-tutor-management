@@ -191,14 +191,15 @@ export default function NIOSTimetableCalendarPage() {
 
   async function loadDropdowns() {
     try {
-      const [fRes, bsRes, uRes, bRes] = await Promise.all([
+      const [fRes, usRes, uRes, bRes] = await Promise.all([
         client.get('/faculty'),
-        client.get('/nios/batch-subjects', { params: { nios_batch_id: batchId } }),
+        // Chapters hang off the university's shared syllabus now, not the batch.
+        client.get('/nios/university-subjects', { params: { nios_university_id: uniId } }),
         client.get('/nios/universities'),
         client.get('/nios/batches', { params: { nios_university_id: uniId } }),
       ]);
       setFaculty(fRes.data);
-      setSubjects(bsRes.data);
+      setSubjects(usRes.data);
       setUniversityName(uRes.data.find((u) => String(u.id) === uniId)?.name || '');
       setBatchName(bRes.data.find((b) => String(b.id) === batchId)?.name || '');
     } catch {
@@ -313,13 +314,13 @@ export default function NIOSTimetableCalendarPage() {
     }
   }
 
-  // Load (once) and cache the chapters for a given subject in this batch
+  // Load (once) and cache the chapters for a given subject in this university
   async function ensureChapters(subjectId) {
     if (!subjectId || chaptersBySubject[subjectId]) return;
-    const bs = subjects.find((s) => String(s.nios_subject_id) === String(subjectId));
-    if (!bs) return;
+    const us = subjects.find((s) => String(s.nios_subject_id) === String(subjectId));
+    if (!us) return;
     try {
-      const res = await client.get('/nios/chapters', { params: { nios_batch_subject_id: bs.id } });
+      const res = await client.get('/nios/chapters', { params: { nios_university_subject_id: us.id } });
       setChaptersBySubject((prev) => ({ ...prev, [subjectId]: res.data }));
     } catch { /**/ }
   }
