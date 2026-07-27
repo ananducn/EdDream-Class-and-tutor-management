@@ -45,22 +45,46 @@ async function syncSlotChapters(slotId, chapterIds) {
   }
 }
 
-async function syncNiosClassForSlot(slot, timetable, userId) {
+// An existing linked class always takes the slot's faculty, subject, times, day
+// and status, so the two records never disagree after an edit. allowCreate=false
+// updates an existing class but won't create one, so a plain field edit on a slot
+// that never had a class doesn't conjure one.
+async function syncNiosClassForSlot(slot, timetable, userId, { allowCreate = true } = {}) {
   const status = slot.class_taken_status;
   const existing = await sql`SELECT id FROM nios_class_entries WHERE nios_timetable_slot_id = ${slot.id}`;
+  const slotDate = timetable?.week_start_date
+    ? dateForSlot(timetable.week_start_date, slot.day_of_week)
+    : null;
 
   if (existing[0]) {
     await sql`
-      UPDATE nios_class_entries SET class_status = ${status}, updated_at = NOW()
+      UPDATE nios_class_entries SET
+        class_status = ${status},
+        faculty_id = ${slot.faculty_id || null},
+        nios_subject_id = ${slot.nios_subject_id || null},
+        start_time = ${slot.start_time || null},
+        end_time = ${slot.end_time || null},
+        total_hours = ${hoursBetween(slot.start_time, slot.end_time)},
+        date = COALESCE(${slotDate}, date),
+        updated_at = NOW()
       WHERE id = ${existing[0].id}
+    `;
+    // Keep the class's chapter set aligned with the slot's.
+    await sql`DELETE FROM nios_class_chapters WHERE nios_class_entry_id = ${existing[0].id}`;
+    await sql`
+      INSERT INTO nios_class_chapters (nios_class_entry_id, nios_chapter_id)
+      SELECT ${existing[0].id}, nios_chapter_id
+      FROM nios_timetable_slot_chapters WHERE nios_timetable_slot_id = ${slot.id}
+      ON CONFLICT DO NOTHING
     `;
     return;
   }
 
+  if (!allowCreate) return;
   if (status === 'not_taken') return;
   if (!timetable?.week_start_date) return;
 
-  const date = dateForSlot(timetable.week_start_date, slot.day_of_week);
+  const date = slotDate;
   if (!date) return;
 
   const created = await sql`
@@ -311,9 +335,11 @@ router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
       await syncSlotChapters(rows[0].id, nios_chapter_ids.filter(Boolean));
     }
 
-    if (class_taken_status) {
+    // Any field edit propagates to the linked class; only an explicit status
+    // change may create one that didn't exist.
+    {
       const tt = await sql`SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date FROM nios_timetables WHERE id = ${req.params.id}`;
-      await syncNiosClassForSlot(rows[0], tt[0], req.user.id);
+      await syncNiosClassForSlot(rows[0], tt[0], req.user.id, { allowCreate: !!class_taken_status });
     }
     const updCtx = await niosSlotContext(rows[0], req.params.id);
     await logActivity(req.user.id, req.user.name, req.user.role, 'update_nios_slot', 'nios_timetable_slot', rows[0].id,

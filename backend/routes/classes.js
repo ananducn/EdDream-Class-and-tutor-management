@@ -2,7 +2,13 @@ import express from 'express';
 import { sql } from '../db.js';
 import { auth } from '../middleware/auth.js';
 import { logActivity } from '../middleware/logger.js';
-import { mondayOf, dayNameOf, timesOverlap, nowInZone } from '../lib/week.js';
+import { mondayOf, dayNameOf, timesOverlap, nowInZone, hoursBetween } from '../lib/week.js';
+import { normalizeSlotGroups } from '../lib/groups.js';
+
+// Hours are derived from the times whenever both are given, falling back to what
+// the caller sent only when they aren't. They feed the faculty hours report, so
+// they should not be whatever a client happens to post.
+const resolveHours = (start, end, given) => hoursBetween(start, end) ?? (given || null);
 
 const router = express.Router();
 
@@ -113,6 +119,52 @@ async function findClash({ universityId, batchId, date, startTime, endTime }) {
   return clash ? dayName : null;
 }
 
+// Push a class's details onto the timetable slot it created, so the weekly grid
+// never disagrees with the class. Previously only class_taken_status was mirrored,
+// which left the grid showing the old faculty/subject/time after an edit.
+//
+// A changed date (or batch) can move the class into a different week or a
+// different batch's grid, so the slot is re-homed to whichever timetable now owns
+// it, creating that week's grid if it doesn't exist yet.
+async function syncSlotFromClass(row, userId) {
+  if (!row.timetable_slot_id) return;
+  const slot = await sql`SELECT * FROM timetable_slots WHERE id = ${row.timetable_slot_id}`;
+  if (!slot[0]) return;
+
+  const dayName = dayNameOf(row.date);
+  const weekStart = mondayOf(row.date);
+  let timetableId = slot[0].timetable_id;
+
+  if (weekStart && row.university_id && row.batch_id) {
+    const current = await sql`
+      SELECT batch_id, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date
+      FROM timetables WHERE id = ${timetableId}
+    `;
+    const moved = !current[0]
+      || current[0].week_start_date !== weekStart
+      || String(current[0].batch_id) !== String(row.batch_id);
+    if (moved) {
+      const { timetable } = await findOrCreateTimetable({
+        universityId: row.university_id, batchId: row.batch_id, weekStart, userId,
+      });
+      timetableId = timetable.id;
+    }
+  }
+
+  await sql`
+    UPDATE timetable_slots SET
+      timetable_id = ${timetableId},
+      day_of_week = COALESCE(${dayName}, day_of_week),
+      start_time = ${row.start_time || null},
+      end_time = ${row.end_time || null},
+      faculty_id = ${row.faculty_id || null},
+      subject_id = ${row.subject_id || null},
+      class_taken_status = ${row.class_status},
+      updated_at = NOW()
+    WHERE id = ${row.timetable_slot_id}
+  `;
+}
+
 // Insert one class_entries row for a single batch and mirror it into that batch's
 // weekly timetable (creating the timetable/slot as needed), exactly as a direct
 // single-class entry does. Clash checking is done by the caller beforehand.
@@ -149,7 +201,7 @@ async function insertClassWithSlot(fields, userId) {
       payment_status, payment_remarks,
       is_cancelled, class_status, timetable_slot_id, class_group_id, created_by
     ) VALUES (
-      ${date}, ${start_time || null}, ${end_time || null}, ${total_hours || null},
+      ${date}, ${start_time || null}, ${end_time || null}, ${resolveHours(start_time, end_time, total_hours)},
       ${faculty_id || null}, ${subject_id || null}, ${university_id || null}, ${batch_id || null}, ${resolvedStream},
       ${academic_year_id || null}, ${semester_id || null}, ${chapter_id || null},
       ${unit_chapter || null}, ${class_mode || null}, ${platform_used || null}, ${notes || null},
@@ -333,7 +385,7 @@ router.put('/:id', auth, async (req, res, next) => {
       rows = await sql`
         UPDATE class_entries SET
           date = ${date}, start_time = ${start_time || null}, end_time = ${end_time || null},
-          total_hours = ${total_hours || null}, faculty_id = ${faculty_id || null},
+          total_hours = ${resolveHours(start_time, end_time, total_hours)}, faculty_id = ${faculty_id || null},
           subject_id = ${subject_id || null}, university_id = ${university_id || null},
           chapter_id = ${chapter_id || null},
           unit_chapter = ${unit_chapter || null}, class_mode = ${class_mode || null},
@@ -348,7 +400,7 @@ router.put('/:id', auth, async (req, res, next) => {
       rows = await sql`
         UPDATE class_entries SET
           date = ${date}, start_time = ${start_time || null}, end_time = ${end_time || null},
-          total_hours = ${total_hours || null}, faculty_id = ${faculty_id || null},
+          total_hours = ${resolveHours(start_time, end_time, total_hours)}, faculty_id = ${faculty_id || null},
           subject_id = ${subject_id || null}, university_id = ${university_id || null}, batch_id = ${batch_id || null},
           stream_id = ${resolvedStream},
           academic_year_id = ${academic_year_id || null}, semester_id = ${semester_id || null}, chapter_id = ${chapter_id || null},
@@ -362,13 +414,10 @@ router.put('/:id', auth, async (req, res, next) => {
     }
     if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
 
-    // Keep every affected row's linked timetable slot in sync with the class.
-    const slotIds = rows.map((r) => r.timetable_slot_id).filter(Boolean);
-    if (slotIds.length) {
-      await sql`
-        UPDATE timetable_slots SET class_taken_status = ${status}, updated_at = NOW()
-        WHERE id = ANY(${slotIds})
-      `;
+    // Keep every affected row's linked timetable slot in sync with the class —
+    // faculty, subject and times included, not just the status.
+    for (const row of rows) {
+      await syncSlotFromClass(row, req.user.id);
     }
 
     // Return the row the client targeted (or the first, when grouped).
@@ -396,9 +445,21 @@ router.delete('/:id', auth, async (req, res, next) => {
     const rows = groupId
       ? await sql`DELETE FROM class_entries WHERE class_group_id = ${groupId} RETURNING *`
       : await sql`DELETE FROM class_entries WHERE id = ${req.params.id} RETURNING *`;
+
+    // The class takes its timetable slot with it — otherwise the weekly grid keeps
+    // showing a lesson with no class record behind it. Mirrors the slot-side rule
+    // that deleting a slot deletes its class.
+    const slotIds = rows.map((r) => r.timetable_slot_id).filter(Boolean);
+    let slotsRemoved = 0;
+    if (slotIds.length) {
+      const doomed = await sql`SELECT id, slot_group_id FROM timetable_slots WHERE id = ANY(${slotIds})`;
+      const goneSlots = await sql`DELETE FROM timetable_slots WHERE id = ANY(${slotIds}) RETURNING id`;
+      slotsRemoved = goneSlots.length;
+      await normalizeSlotGroups(doomed.map((s) => s.slot_group_id));
+    }
     await logActivity(req.user.id, req.user.name, req.user.role, 'delete_class', 'class_entry', req.params.id,
-      `Deleted class: ${classDetail(deletedCtx)}${groupId ? ` (+${rows.length - 1} linked)` : ''}`);
-    res.json({ message: 'Deleted.', count: rows.length });
+      `Deleted class: ${classDetail(deletedCtx)}${groupId ? ` (+${rows.length - 1} linked)` : ''}${slotsRemoved ? ` and ${slotsRemoved} timetable slot${slotsRemoved > 1 ? 's' : ''}` : ''}`);
+    res.json({ message: 'Deleted.', count: rows.length, slots_removed: slotsRemoved });
   } catch (err) {
     next(err);
   }

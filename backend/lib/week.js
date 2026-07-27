@@ -81,3 +81,16 @@ export function nowInZone(tz = process.env.INSTITUTE_TZ || 'Asia/Kolkata') {
     time: `${parts.hour}:${parts.minute}`,
   };
 }
+
+// Duration between two 'HH:MM'/'HH:MM:SS' times, as a 2-dp string, or null when
+// either is missing or the range is not positive. Class hours feed the faculty
+// hours report, so they are derived from the times rather than trusted from the
+// request body — a client sending stale hours with new times would otherwise be
+// stored as-is.
+export function hoursBetween(start, end) {
+  if (!start || !end) return null;
+  const [sh, sm] = start.slice(0, 5).split(':').map(Number);
+  const [eh, em] = end.slice(0, 5).split(':').map(Number);
+  const mins = (eh * 60 + em) - (sh * 60 + sm);
+  return mins > 0 ? (mins / 60).toFixed(2) : null;
+}
