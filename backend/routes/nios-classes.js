@@ -12,7 +12,8 @@ const JOIN = `FROM nios_class_entries c
   LEFT JOIN nios_subjects sub ON sub.id = c.nios_subject_id
   LEFT JOIN nios_chapters nch ON nch.id = c.nios_chapter_id`;
 
-// Aggregated list of every chapter (with its derived subject) attached to a class
+// Aggregated list of every chapter (with its derived subject) attached to a class.
+// Chapters now hang off the shared university-subject syllabus.
 const CHAPTERS_AGG = `COALESCE((
     SELECT json_agg(json_build_object(
       'nios_chapter_id', ch.id, 'chapter_title', ch.title,
@@ -20,8 +21,7 @@ const CHAPTERS_AGG = `COALESCE((
       ORDER BY s.name, ch.chapter_order)
     FROM nios_class_chapters cc
     JOIN nios_chapters ch ON ch.id = cc.nios_chapter_id
-    JOIN nios_batch_subjects bsx ON bsx.id = ch.nios_batch_subject_id
-    JOIN nios_subjects s ON s.id = bsx.nios_subject_id
+    JOIN nios_subjects s ON s.id = ch.nios_subject_id
     WHERE cc.nios_class_entry_id = c.id), '[]') AS chapters`;
 
 const SELECT_COLS = `c.*, f.name AS faculty_name, b.name AS batch_name,
@@ -44,10 +44,7 @@ async function syncClassChapters(entryId, chapterIds) {
   let subjectId = null;
   if (first) {
     const s = await sql`
-      SELECT bs.nios_subject_id
-      FROM nios_chapters ch
-      JOIN nios_batch_subjects bs ON bs.id = ch.nios_batch_subject_id
-      WHERE ch.id = ${first}
+      SELECT nios_subject_id FROM nios_chapters WHERE id = ${first}
     `;
     subjectId = s[0]?.nios_subject_id || null;
   }
@@ -80,8 +77,7 @@ function niosClassDetail(row) {
 function buildFilters(query) {
   const {
     date_from, date_to, faculty_id, nios_university_id, nios_batch_id, nios_subject_id, nios_chapter_id,
-    year, class_mode, is_recorded, class_status,
-    upload_youtube, upload_student_app,
+    year, class_mode, class_status,
   } = query;
 
   const conditions = [];
@@ -97,8 +93,7 @@ function buildFilters(query) {
     conditions.push(`(c.nios_subject_id = $${i} OR EXISTS (
       SELECT 1 FROM nios_class_chapters cc
       JOIN nios_chapters ch ON ch.id = cc.nios_chapter_id
-      JOIN nios_batch_subjects bs ON bs.id = ch.nios_batch_subject_id
-      WHERE cc.nios_class_entry_id = c.id AND bs.nios_subject_id = $${i}))`);
+      WHERE cc.nios_class_entry_id = c.id AND ch.nios_subject_id = $${i}))`);
     params.push(nios_subject_id); i++;
   }
   if (nios_chapter_id) {
@@ -110,15 +105,6 @@ function buildFilters(query) {
   if (year)             { conditions.push(`b.year = $${i++}`);            params.push(year); }
   if (class_mode)       { conditions.push(`c.class_mode = $${i++}`);         params.push(class_mode); }
   if (class_status)     { conditions.push(`c.class_status = $${i++}`);       params.push(class_status); }
-  if (is_recorded !== undefined && is_recorded !== '') {
-    conditions.push(`c.is_recorded = $${i++}`); params.push(is_recorded === 'true');
-  }
-  if (upload_youtube !== undefined && upload_youtube !== '') {
-    conditions.push(`c.upload_youtube = $${i++}`); params.push(upload_youtube === 'true');
-  }
-  if (upload_student_app !== undefined && upload_student_app !== '') {
-    conditions.push(`c.upload_student_app = $${i++}`); params.push(upload_student_app === 'true');
-  }
 
   return { conditions, params };
 }
@@ -146,42 +132,11 @@ router.get('/summary', auth, async (req, res, next) => {
         COUNT(*) FILTER (WHERE c.class_status = 'not_taken')::int AS not_taken,
         COUNT(*) FILTER (WHERE c.class_status = 'scheduled')::int AS scheduled,
         COUNT(*) FILTER (WHERE c.is_cancelled = true)::int AS cancelled,
-        COUNT(*) FILTER (WHERE c.is_recorded = true)::int AS recorded,
         COALESCE(SUM(c.total_hours), 0)::numeric(10,2) AS total_hours
        ${JOIN} ${where}`,
       params
     );
     res.json(rows[0]);
-  } catch (err) { next(err); }
-});
-
-router.get('/chapter-recording-overview', auth, async (req, res, next) => {
-  try {
-    const { nios_batch_id } = req.query;
-    if (!nios_batch_id) return res.status(400).json({ error: 'nios_batch_id is required.' });
-
-    const rows = await sql.query(`
-      SELECT
-        bs.id                  AS nios_batch_subject_id,
-        bs.nios_subject_id,
-        s.name                 AS subject_name,
-        ch.id                  AS chapter_id,
-        ch.title               AS chapter_title,
-        ch.chapter_order,
-        COUNT(c.id)::int                                                               AS total_classes,
-        COUNT(c.id) FILTER (WHERE c.is_recorded = true)::int                          AS recorded,
-        COUNT(c.id) FILTER (WHERE c.is_recorded = false OR c.is_recorded IS NULL)::int AS not_recorded
-      FROM nios_batch_subjects bs
-      JOIN  nios_subjects s ON s.id = bs.nios_subject_id
-      LEFT JOIN nios_chapters ch ON ch.nios_batch_subject_id = bs.id AND ch.is_active = true
-      LEFT JOIN nios_class_chapters cc ON cc.nios_chapter_id = ch.id
-      LEFT JOIN nios_class_entries c ON c.id = cc.nios_class_entry_id AND c.nios_batch_id = $1
-      WHERE bs.nios_batch_id = $1
-      GROUP BY bs.id, bs.nios_subject_id, s.name, ch.id, ch.title, ch.chapter_order
-      ORDER BY s.name, ch.chapter_order NULLS LAST
-    `, [nios_batch_id]);
-
-    res.json(rows);
   } catch (err) { next(err); }
 });
 
@@ -196,53 +151,59 @@ router.get('/:id', auth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
+// Insert one NIOS class row for a single batch and sync its chapter set.
+async function insertNiosClass(fields, userId, chapterIds) {
+  const {
+    date, start_time, end_time, total_hours, faculty_id, nios_batch_id, nios_subject_id, nios_chapter_id,
+    class_mode, platform_used, notes, payment_status, payment_remarks, is_cancelled, class_status, nios_class_group_id,
+  } = fields;
+  const rows = await sql`
+    INSERT INTO nios_class_entries (
+      date, start_time, end_time, total_hours, faculty_id, nios_batch_id, nios_subject_id, nios_chapter_id,
+      class_mode, platform_used, notes,
+      payment_status, payment_remarks,
+      is_cancelled, class_status, nios_class_group_id, created_by
+    ) VALUES (
+      ${date}, ${start_time || null}, ${end_time || null}, ${total_hours || null},
+      ${faculty_id || null}, ${nios_batch_id || null}, ${nios_subject_id || null}, ${nios_chapter_id || null},
+      ${class_mode || null}, ${platform_used || null}, ${notes || null},
+      ${payment_status || 'pending'}, ${payment_remarks || null},
+      ${is_cancelled ?? false}, ${class_status || 'scheduled'}, ${nios_class_group_id || null}, ${userId}
+    ) RETURNING *
+  `;
+  await syncClassChapters(rows[0].id, chapterIds);
+  return rows[0];
+}
+
 router.post('/', auth, async (req, res, next) => {
   try {
-    const {
-      date, start_time, end_time, total_hours, faculty_id, nios_batch_id, nios_subject_id, nios_chapter_id, nios_chapter_ids,
-      class_mode, platform_used, notes,
-      is_recorded, recording_file_name, recording_duration, storage_location, recording_link, backup_available,
-      editing_status,
-      upload_student_app, upload_student_app_date, upload_student_app_link,
-      upload_youtube, upload_youtube_date, upload_youtube_link, youtube_privacy,
-      upload_gdrive, upload_gdrive_link,
-      upload_harddisk, upload_harddisk_location,
-      is_cancelled, class_status,
-    } = req.body;
-
+    const { date, nios_batch_id, nios_batch_ids, nios_chapter_id, nios_chapter_ids } = req.body;
     if (!date) return res.status(400).json({ error: 'Date is required.' });
 
     const chapterIds = Array.isArray(nios_chapter_ids) ? nios_chapter_ids.filter(Boolean) : (nios_chapter_id ? [nios_chapter_id] : []);
 
-    const rows = await sql`
-      INSERT INTO nios_class_entries (
-        date, start_time, end_time, total_hours, faculty_id, nios_batch_id, nios_subject_id, nios_chapter_id,
-        class_mode, platform_used, notes,
-        is_recorded, recording_file_name, recording_duration, storage_location, recording_link, backup_available,
-        editing_status,
-        upload_student_app, upload_student_app_date, upload_student_app_link,
-        upload_youtube, upload_youtube_date, upload_youtube_link, youtube_privacy,
-        upload_gdrive, upload_gdrive_link,
-        upload_harddisk, upload_harddisk_location,
-        is_cancelled, class_status, created_by
-      ) VALUES (
-        ${date}, ${start_time || null}, ${end_time || null}, ${total_hours || null},
-        ${faculty_id || null}, ${nios_batch_id || null}, ${nios_subject_id || null}, ${nios_chapter_id || null},
-        ${class_mode || null}, ${platform_used || null}, ${notes || null},
-        ${is_recorded ?? false}, ${recording_file_name || null}, ${recording_duration || null},
-        ${storage_location || null}, ${recording_link || null}, ${backup_available ?? false},
-        ${editing_status || 'not_edited'},
-        ${upload_student_app ?? false}, ${upload_student_app_date || null}, ${upload_student_app_link || null},
-        ${upload_youtube ?? false}, ${upload_youtube_date || null}, ${upload_youtube_link || null}, ${youtube_privacy || null},
-        ${upload_gdrive ?? false}, ${upload_gdrive_link || null},
-        ${upload_harddisk ?? false}, ${upload_harddisk_location || null},
-        ${is_cancelled ?? false}, ${class_status || 'scheduled'}, ${req.user.id}
-      ) RETURNING *
-    `;
-    await syncClassChapters(rows[0].id, chapterIds);
-    const createdCtx = await niosClassContext(rows[0].id);
-    await logActivity(req.user.id, req.user.name, req.user.role, 'create_nios_class', 'nios_class_entry', rows[0].id, `Created NIOS class: ${niosClassDetail(createdCtx)}`);
-    res.status(201).json(createdCtx);
+    // A common-subject class fans out across many batches of the university.
+    const multi = Array.isArray(nios_batch_ids) && nios_batch_ids.length > 0;
+    const targetBatches = (multi ? nios_batch_ids : [nios_batch_id]).filter(Boolean);
+    if (targetBatches.length === 0) return res.status(400).json({ error: 'At least one batch is required.' });
+
+    const created = [];
+    for (const bId of targetBatches) {
+      created.push(await insertNiosClass({ ...req.body, nios_batch_id: bId }, req.user.id, chapterIds));
+    }
+
+    if (created.length > 1) {
+      const groupId = created[0].id;
+      const ids = created.map((c) => c.id);
+      await sql`UPDATE nios_class_entries SET nios_class_group_id = ${groupId} WHERE id = ANY(${ids})`;
+    }
+
+    for (const c of created) {
+      const ctx = await niosClassContext(c.id);
+      await logActivity(req.user.id, req.user.name, req.user.role, 'create_nios_class', 'nios_class_entry', c.id, `Created NIOS class: ${niosClassDetail(ctx)}`);
+    }
+    const firstCtx = await niosClassContext(created[0].id);
+    res.status(201).json(multi ? { ...firstCtx, count: created.length } : firstCtx);
   } catch (err) { next(err); }
 });
 
@@ -251,12 +212,7 @@ router.put('/:id', auth, async (req, res, next) => {
     const {
       date, start_time, end_time, total_hours, faculty_id, nios_batch_id, nios_subject_id, nios_chapter_id, nios_chapter_ids,
       class_mode, platform_used, notes,
-      is_recorded, recording_file_name, recording_duration, storage_location, recording_link, backup_available,
-      editing_status,
-      upload_student_app, upload_student_app_date, upload_student_app_link,
-      upload_youtube, upload_youtube_date, upload_youtube_link, youtube_privacy,
-      upload_gdrive, upload_gdrive_link,
-      upload_harddisk, upload_harddisk_location,
+      payment_status, payment_remarks,
       is_cancelled, class_status,
     } = req.body;
 
@@ -275,43 +231,54 @@ router.put('/:id', auth, async (req, res, next) => {
       }
     }
 
-    const rows = await sql`
-      UPDATE nios_class_entries SET
-        date = ${date}, start_time = ${start_time || null}, end_time = ${end_time || null},
-        total_hours = ${total_hours || null}, faculty_id = ${faculty_id || null},
-        nios_batch_id = ${nios_batch_id || null}, nios_subject_id = ${nios_subject_id || null},
-        nios_chapter_id = ${nios_chapter_id || null},
-        class_mode = ${class_mode || null}, platform_used = ${platform_used || null}, notes = ${notes || null},
-        is_recorded = ${is_recorded ?? false}, recording_file_name = ${recording_file_name || null},
-        recording_duration = ${recording_duration || null}, storage_location = ${storage_location || null},
-        recording_link = ${recording_link || null}, backup_available = ${backup_available ?? false},
-        editing_status = ${editing_status || 'not_edited'},
-        upload_student_app = ${upload_student_app ?? false},
-        upload_student_app_date = ${upload_student_app_date || null},
-        upload_student_app_link = ${upload_student_app_link || null},
-        upload_youtube = ${upload_youtube ?? false},
-        upload_youtube_date = ${upload_youtube_date || null},
-        upload_youtube_link = ${upload_youtube_link || null},
-        youtube_privacy = ${youtube_privacy || null},
-        upload_gdrive = ${upload_gdrive ?? false}, upload_gdrive_link = ${upload_gdrive_link || null},
-        upload_harddisk = ${upload_harddisk ?? false}, upload_harddisk_location = ${upload_harddisk_location || null},
-        is_cancelled = ${is_cancelled ?? false}, class_status = ${status},
-        updated_at = NOW()
-      WHERE id = ${req.params.id} RETURNING *
-    `;
+    const existing = await sql`SELECT nios_class_group_id FROM nios_class_entries WHERE id = ${req.params.id}`;
+    if (!existing[0]) return res.status(404).json({ error: 'Not found.' });
+    const groupId = existing[0].nios_class_group_id;
+
+    let rows;
+    if (groupId) {
+      // Grouped (common-subject) class: apply the shared edit to every row in the
+      // group, leaving each row's own nios_batch_id intact.
+      rows = await sql`
+        UPDATE nios_class_entries SET
+          date = ${date}, start_time = ${start_time || null}, end_time = ${end_time || null},
+          total_hours = ${total_hours || null}, faculty_id = ${faculty_id || null},
+          nios_subject_id = ${nios_subject_id || null}, nios_chapter_id = ${nios_chapter_id || null},
+          class_mode = ${class_mode || null}, platform_used = ${platform_used || null}, notes = ${notes || null},
+          payment_status = ${payment_status || 'pending'}, payment_remarks = ${payment_remarks || null},
+          is_cancelled = ${is_cancelled ?? false}, class_status = ${status},
+          updated_at = NOW()
+        WHERE nios_class_group_id = ${groupId} RETURNING *
+      `;
+    } else {
+      rows = await sql`
+        UPDATE nios_class_entries SET
+          date = ${date}, start_time = ${start_time || null}, end_time = ${end_time || null},
+          total_hours = ${total_hours || null}, faculty_id = ${faculty_id || null},
+          nios_batch_id = ${nios_batch_id || null}, nios_subject_id = ${nios_subject_id || null},
+          nios_chapter_id = ${nios_chapter_id || null},
+          class_mode = ${class_mode || null}, platform_used = ${platform_used || null}, notes = ${notes || null},
+          payment_status = ${payment_status || 'pending'}, payment_remarks = ${payment_remarks || null},
+          is_cancelled = ${is_cancelled ?? false}, class_status = ${status},
+          updated_at = NOW()
+        WHERE id = ${req.params.id} RETURNING *
+      `;
+    }
     if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
 
-    await syncClassChapters(rows[0].id, chapterIds);
+    for (const r of rows) await syncClassChapters(r.id, chapterIds);
 
-    if (rows[0].nios_timetable_slot_id) {
+    const slotIds = rows.map((r) => r.nios_timetable_slot_id).filter(Boolean);
+    if (slotIds.length) {
       await sql`
         UPDATE nios_timetable_slots SET class_taken_status = ${status}, updated_at = NOW()
-        WHERE id = ${rows[0].nios_timetable_slot_id}
+        WHERE id = ANY(${slotIds})
       `;
     }
 
-    const updatedCtx = await niosClassContext(rows[0].id);
-    await logActivity(req.user.id, req.user.name, req.user.role, 'update_nios_class', 'nios_class_entry', rows[0].id, `Updated NIOS class: ${niosClassDetail(updatedCtx)}`);
+    const target = rows.find((r) => String(r.id) === String(req.params.id)) || rows[0];
+    const updatedCtx = await niosClassContext(target.id);
+    await logActivity(req.user.id, req.user.name, req.user.role, 'update_nios_class', 'nios_class_entry', target.id, `Updated NIOS class: ${niosClassDetail(updatedCtx)}`);
     res.json(updatedCtx);
   } catch (err) { next(err); }
 });
@@ -325,9 +292,13 @@ router.delete('/:id', auth, async (req, res, next) => {
       return res.status(403).json({ error: 'Forbidden.' });
     }
     const deletedCtx = await niosClassContext(req.params.id);
-    const rows = await sql`DELETE FROM nios_class_entries WHERE id = ${req.params.id} RETURNING *`;
-    await logActivity(req.user.id, req.user.name, req.user.role, 'delete_nios_class', 'nios_class_entry', rows[0].id, `Deleted NIOS class: ${niosClassDetail(deletedCtx)}`);
-    res.json({ message: 'Deleted.' });
+    const groupId = existing[0].nios_class_group_id;
+    const rows = groupId
+      ? await sql`DELETE FROM nios_class_entries WHERE nios_class_group_id = ${groupId} RETURNING *`
+      : await sql`DELETE FROM nios_class_entries WHERE id = ${req.params.id} RETURNING *`;
+    await logActivity(req.user.id, req.user.name, req.user.role, 'delete_nios_class', 'nios_class_entry', req.params.id,
+      `Deleted NIOS class: ${niosClassDetail(deletedCtx)}${groupId ? ` (+${rows.length - 1} linked)` : ''}`);
+    res.json({ message: 'Deleted.', count: rows.length });
   } catch (err) { next(err); }
 });
 

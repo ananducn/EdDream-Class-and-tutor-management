@@ -146,3 +146,8 @@
     color: var(--foreground);
   }
 }
+
+/* Toasts: neutral card background with a bold indigo accent bar (the app's brand
+   primary), consistent across types and in both light and dark mode. */
+[data-sonner-toast] { border-left: 4px solid #6366f1; }
+[data-sonner-toast] [data-icon] { color: #6366f1; }

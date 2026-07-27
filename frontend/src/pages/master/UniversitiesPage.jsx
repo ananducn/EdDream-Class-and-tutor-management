@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import StatusBadge from '@/components/StatusBadge';
 import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
+import { SkeletonTable } from '@/components/Skeletons';
 
 const emptyForm = { name: '', short_code: '' };
 
@@ -19,13 +20,17 @@ export default function UniversitiesPage() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   async function load() {
+    setLoading(true);
     try {
       const res = await client.get('/universities?include_inactive=true');
       setUniversities(res.data);
     } catch {
       toast.error('Failed to load universities.');
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -102,6 +107,7 @@ export default function UniversitiesPage() {
           <Button size="sm" onClick={openAdd}>Add New</Button>
         </CardHeader>
         <CardContent>
+          {loading ? <SkeletonTable rows={5} cols={4} /> : (
           <Table>
             <TableHeader>
               <TableRow>
@@ -136,6 +142,7 @@ export default function UniversitiesPage() {
               ))}
             </TableBody>
           </Table>
+          )}
         </CardContent>
       </Card>
 

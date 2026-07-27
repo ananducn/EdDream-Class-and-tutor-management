@@ -8,10 +8,12 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
+import { SkeletonTable } from '@/components/Skeletons';
 
 const RESOURCE_TYPES = [
   { value: 'notes',           label: 'Notes' },
@@ -31,8 +33,10 @@ const TYPE_COLORS = {
   question_paper: 'bg-pink-100 text-pink-700 dark:bg-pink-900/40 dark:text-pink-300',
 };
 
-// semester sits between year and subject
-const PARAM_ORDER = ['uni', 'stream', 'batch', 'year', 'semester', 'subject', 'chapter'];
+// The syllabus is defined once per STREAM and shared by every batch, so the
+// drill-down is Uni → Stream → Year → Semester|Subject → Subject → Chapter →
+// Resource. Batches are managed separately (Settings → Batches) and inherit this.
+const PARAM_ORDER = ['uni', 'stream', 'year', 'semester', 'subject', 'chapter'];
 
 export default function CurriculumPage() {
   const confirm = useConfirm();
@@ -40,7 +44,6 @@ export default function CurriculumPage() {
 
   const uni      = searchParams.get('uni');
   const stream   = searchParams.get('stream');
-  const batch    = searchParams.get('batch');
   const year     = searchParams.get('year');
   const semester = searchParams.get('semester');
   const subject  = searchParams.get('subject');
@@ -48,18 +51,17 @@ export default function CurriculumPage() {
 
   const uniLabel      = searchParams.get('uni_label');
   const streamLabel   = searchParams.get('stream_label');
-  const batchLabel    = searchParams.get('batch_label');
   const yearLabel     = searchParams.get('year_label');
   const semesterLabel = searchParams.get('semester_label');
   const subjectLabel  = searchParams.get('subject_label');
   const chapterLabel  = searchParams.get('chapter_label');
 
-  // 0=Unis 1=Streams 2=Batches 3=AcadYears 4=Sems|Subjects 5=Subjects(via sem) 6=Chapters 7=Resources
-  const level = chapter ? 7 : subject ? 6 : semester ? 5 : year ? 4 : batch ? 3 : stream ? 2 : uni ? 1 : 0;
+  // 0=Unis 1=Streams 2=AcadYears 3=Sems|Subjects 4=Subjects(via sem) 5=Chapters 6=Resources
+  const level = chapter ? 6 : subject ? 5 : semester ? 4 : year ? 3 : stream ? 2 : uni ? 1 : 0;
 
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
-  // At level 4 (year selected), tracks whether this year uses semesters
+  // At level 3 (year selected), tracks whether this year uses semesters
   const [hasSemesters, setHasSemesters] = useState(false);
 
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -67,8 +69,11 @@ export default function CurriculumPage() {
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState(false);
   const [availableSubjects, setAvailableSubjects] = useState([]);
+  // When ticked, the assign-subject picker offers common subjects from sibling
+  // streams (same university), so one subject can be shared across streams.
+  const [commonSubject, setCommonSubject] = useState(false);
 
-  // "Create new subject" dialog — used at level 4/5 to create + auto-assign
+  // "Create new subject" dialog — used at the subject levels to create + auto-assign
   const [createSubjectOpen, setCreateSubjectOpen] = useState(false);
   const [createSubjectForm, setCreateSubjectForm] = useState({ name: '', subject_code: '' });
   const [createSubjectSaving, setCreateSubjectSaving] = useState(false);
@@ -114,12 +119,9 @@ export default function CurriculumPage() {
         const res = await client.get(`/streams?university_id=${uni}`);
         setItems(res.data);
       } else if (level === 2) {
-        const res = await client.get(`/batches?university_id=${uni}&stream_id=${stream}`);
+        const res = await client.get(`/academic-years?stream_id=${stream}&include_inactive=true`);
         setItems(res.data);
       } else if (level === 3) {
-        const res = await client.get(`/academic-years?batch_id=${batch}&include_inactive=true`);
-        setItems(res.data);
-      } else if (level === 4) {
         // Check whether this year uses semesters or assigns subjects directly
         const semRes = await client.get(`/semesters?academic_year_id=${year}&include_inactive=true`);
         if (semRes.data.length > 0) {
@@ -130,13 +132,13 @@ export default function CurriculumPage() {
           const subRes = await client.get(`/academic-year-subjects?academic_year_id=${year}`);
           setItems(subRes.data);
         }
-      } else if (level === 5) {
+      } else if (level === 4) {
         const res = await client.get(`/academic-year-subjects?semester_id=${semester}`);
         setItems(res.data);
-      } else if (level === 6) {
+      } else if (level === 5) {
         const res = await client.get(`/chapters?academic_year_subject_id=${subject}&include_inactive=true`);
         setItems(res.data);
-      } else if (level === 7) {
+      } else if (level === 6) {
         const res = await client.get(`/learning-resources?chapter_id=${chapter}&include_inactive=true`);
         setItems(res.data);
       }
@@ -150,9 +152,29 @@ export default function CurriculumPage() {
   useEffect(() => {
     setHasSemesters(false);
     load();
-  }, [level, uni, stream, batch, year, semester, subject, chapter]);
+  }, [level, uni, stream, year, semester, subject, chapter]);
 
   // ── Dialog helpers ─────────────────────────────────────────────────────────
+
+  // Available subjects for the assign-subject picker. common=false scopes to this
+  // stream's own subjects; common=true broadens to every subject in the university
+  // (across its streams) so an existing subject can be linked as a common subject.
+  async function loadAvailableSubjects(common) {
+    try {
+      const q = common
+        ? `/subjects?university_id=${uni}&common=true`
+        : `/subjects?university_id=${uni}&stream_id=${stream}`;
+      const res = await client.get(q);
+      const already = new Set(items.map((i) => String(i.subject_id)));
+      setAvailableSubjects(res.data.filter((s) => !already.has(String(s.id))));
+    } catch { toast.error('Failed to load subjects.'); }
+  }
+
+  async function handleCommonToggle(v) {
+    setCommonSubject(v);
+    setForm((f) => ({ ...f, subject_id: '' }));
+    await loadAvailableSubjects(v);
+  }
 
   async function openAdd() {
     setEditing(null);
@@ -161,21 +183,16 @@ export default function CurriculumPage() {
     } else if (level === 1) {
       setForm({ name: '' });
     } else if (level === 2) {
-      setForm({ name: '', copy_from_batch_id: '' });
-    } else if (level === 3) {
       setForm({ name: '', year_order: String(items.length + 1) });
-    } else if (level === 4 && hasSemesters) {
+    } else if (level === 3 && hasSemesters) {
       setForm({ name: '', semester_order: String(items.length + 1) });
-    } else if (level === 4 || level === 5) {
+    } else if (level === 3 || level === 4) {
       setForm({ subject_id: '' });
-      try {
-        const res = await client.get(`/subjects?university_id=${uni}&stream_id=${stream}`);
-        const already = new Set(items.map((i) => String(i.subject_id)));
-        setAvailableSubjects(res.data.filter((s) => !already.has(String(s.id))));
-      } catch { toast.error('Failed to load subjects.'); }
-    } else if (level === 6) {
+      setCommonSubject(false);
+      await loadAvailableSubjects(false);
+    } else if (level === 5) {
       setForm({ title: '', description: '', chapter_order: String(items.filter((i) => i.is_active).length + 1) });
-    } else if (level === 7) {
+    } else if (level === 6) {
       setForm({ type: '', title: '', url: '', description: '' });
     }
     setDialogOpen(true);
@@ -183,10 +200,10 @@ export default function CurriculumPage() {
 
   function openEdit(item) {
     setEditing(item);
-    if (level === 3) setForm({ name: item.name, year_order: String(item.year_order) });
-    else if (level === 4 && hasSemesters) setForm({ name: item.name, semester_order: String(item.semester_order) });
-    else if (level === 6) setForm({ title: item.title, description: item.description || '', chapter_order: String(item.chapter_order) });
-    else if (level === 7) setForm({ type: item.type, title: item.title, url: item.url || '', description: item.description || '' });
+    if (level === 2) setForm({ name: item.name, year_order: String(item.year_order) });
+    else if (level === 3 && hasSemesters) setForm({ name: item.name, semester_order: String(item.semester_order) });
+    else if (level === 5) setForm({ title: item.title, description: item.description || '', chapter_order: String(item.chapter_order) });
+    else if (level === 6) setForm({ type: item.type, title: item.title, url: item.url || '', description: item.description || '' });
     setDialogOpen(true);
   }
 
@@ -201,32 +218,24 @@ export default function CurriculumPage() {
         await client.post('/streams', { name: form.name, university_id: uni });
         toast.success('Stream added.');
       } else if (level === 2) {
-        const res = await client.post('/batches', {
-          name: form.name,
-          university_id: uni,
-          stream_id: stream,
-          copy_from_batch_id: form.copy_from_batch_id || undefined,
-        });
-        toast.success(res.data.copied ? 'Batch added with curriculum structure copied.' : 'Batch added.');
-      } else if (level === 3) {
-        const payload = { batch_id: batch, name: form.name, year_order: parseInt(form.year_order) || 1 };
+        const payload = { stream_id: stream, name: form.name, year_order: parseInt(form.year_order) || 1 };
         editing ? await client.put(`/academic-years/${editing.id}`, payload) : await client.post('/academic-years', payload);
         toast.success(editing ? 'Academic year updated.' : 'Academic year added.');
-      } else if (level === 4 && hasSemesters) {
+      } else if (level === 3 && hasSemesters) {
         const payload = { academic_year_id: year, name: form.name, semester_order: parseInt(form.semester_order) || 1 };
         editing ? await client.put(`/semesters/${editing.id}`, payload) : await client.post('/semesters', payload);
         toast.success(editing ? 'Semester updated.' : 'Semester added.');
-      } else if (level === 4 && !hasSemesters) {
+      } else if (level === 3 && !hasSemesters) {
         await client.post('/academic-year-subjects', { academic_year_id: year, subject_id: form.subject_id });
         toast.success('Subject added to this year.');
-      } else if (level === 5) {
+      } else if (level === 4) {
         await client.post('/academic-year-subjects', { academic_year_id: year, semester_id: semester, subject_id: form.subject_id });
         toast.success('Subject added to this semester.');
-      } else if (level === 6) {
+      } else if (level === 5) {
         const payload = { academic_year_subject_id: subject, title: form.title, description: form.description, chapter_order: parseInt(form.chapter_order) || 1 };
         editing ? await client.put(`/chapters/${editing.id}`, payload) : await client.post('/chapters', payload);
         toast.success(editing ? 'Chapter updated.' : 'Chapter added.');
-      } else if (level === 7) {
+      } else if (level === 6) {
         const payload = { chapter_id: chapter, type: form.type, title: form.title, url: form.url, description: form.description };
         editing ? await client.put(`/learning-resources/${editing.id}`, payload) : await client.post('/learning-resources', payload);
         toast.success(editing ? 'Resource updated.' : 'Resource added.');
@@ -291,7 +300,7 @@ export default function CurriculumPage() {
 
   async function handleDeactivate(item) {
     const label = item.name || item.title || item.subject_name || 'this item';
-    const isRemove = level === 4 || level === 5;
+    const isRemove = level === 3 || level === 4;
     const ok = await confirm({
       title: isRemove ? 'Remove subject?' : 'Deactivate?',
       description: `Are you sure you want to ${isRemove ? 'remove' : 'deactivate'} "${label}"?`,
@@ -300,16 +309,16 @@ export default function CurriculumPage() {
     });
     if (!ok) return;
     try {
-      if (level === 3) await client.delete(`/academic-years/${item.id}`);
-      else if (level === 4 && hasSemesters) await client.delete(`/semesters/${item.id}`);
-      else if (level === 4 || level === 5) {
+      if (level === 2) await client.delete(`/academic-years/${item.id}`);
+      else if (level === 3 && hasSemesters) await client.delete(`/semesters/${item.id}`);
+      else if (level === 3 || level === 4) {
         await client.delete(`/academic-year-subjects/${item.id}`);
         toast.success('Subject removed.');
         load();
         return;
       }
-      else if (level === 6) await client.delete(`/chapters/${item.id}`);
-      else if (level === 7) await client.delete(`/learning-resources/${item.id}`);
+      else if (level === 5) await client.delete(`/chapters/${item.id}`);
+      else if (level === 6) await client.delete(`/learning-resources/${item.id}`);
       toast.success('Deactivated.');
       load();
     } catch (err) { toast.error(err.response?.data?.error || 'Failed.'); }
@@ -317,10 +326,10 @@ export default function CurriculumPage() {
 
   async function handleActivate(item) {
     try {
-      if (level === 3) await client.patch(`/academic-years/${item.id}/activate`);
-      else if (level === 4 && hasSemesters) await client.patch(`/semesters/${item.id}/activate`);
-      else if (level === 6) await client.patch(`/chapters/${item.id}/activate`);
-      else if (level === 7) await client.patch(`/learning-resources/${item.id}/activate`);
+      if (level === 2) await client.patch(`/academic-years/${item.id}/activate`);
+      else if (level === 3 && hasSemesters) await client.patch(`/semesters/${item.id}/activate`);
+      else if (level === 5) await client.patch(`/chapters/${item.id}/activate`);
+      else if (level === 6) await client.patch(`/learning-resources/${item.id}/activate`);
       toast.success('Activated.');
       load();
     } catch (err) { toast.error(err.response?.data?.error || 'Failed.'); }
@@ -331,10 +340,9 @@ export default function CurriculumPage() {
   const crumbs = [
     uni      ? { label: uniLabel,      onClick: () => goToLevel(1) } : null,
     stream   ? { label: streamLabel,   onClick: () => goToLevel(2) } : null,
-    batch    ? { label: batchLabel,    onClick: () => goToLevel(3) } : null,
-    year     ? { label: yearLabel,     onClick: () => goToLevel(4) } : null,
-    semester ? { label: semesterLabel, onClick: () => goToLevel(5) } : null,
-    subject  ? { label: subjectLabel,  onClick: () => goToLevel(6) } : null,
+    year     ? { label: yearLabel,     onClick: () => goToLevel(3) } : null,
+    semester ? { label: semesterLabel, onClick: () => goToLevel(4) } : null,
+    subject  ? { label: subjectLabel,  onClick: () => goToLevel(5) } : null,
     chapter  ? { label: chapterLabel,  onClick: null } : null,
   ].filter(Boolean);
 
@@ -343,24 +351,22 @@ export default function CurriculumPage() {
   function pageTitle() {
     if (level === 0) return 'Select a University';
     if (level === 1) return 'Select a Stream / Course';
-    if (level === 2) return 'Select a Batch';
-    if (level === 3) return 'Academic Years';
-    if (level === 4) return hasSemesters ? 'Semesters' : 'Subjects in this Year';
-    if (level === 5) return 'Subjects in this Semester';
-    if (level === 6) return 'Chapters';
-    if (level === 7) return 'Learning Resources';
+    if (level === 2) return 'Academic Years';
+    if (level === 3) return hasSemesters ? 'Semesters' : 'Subjects in this Year';
+    if (level === 4) return 'Subjects in this Semester';
+    if (level === 5) return 'Chapters';
+    if (level === 6) return 'Learning Resources';
     return '';
   }
 
   function addLabel() {
     if (level === 0) return '+ Add University';
     if (level === 1) return '+ Add Stream';
-    if (level === 2) return '+ Add Batch';
-    if (level === 3) return '+ Add Year';
-    if (level === 4 && hasSemesters) return '+ Add Semester';
-    if (level === 4 || level === 5) return '+ Assign Subject';
-    if (level === 6) return '+ Add Chapter';
-    if (level === 7) return '+ Add Resource';
+    if (level === 2) return '+ Add Year';
+    if (level === 3 && hasSemesters) return '+ Add Semester';
+    if (level === 3 || level === 4) return '+ Assign Subject';
+    if (level === 5) return '+ Add Chapter';
+    if (level === 6) return '+ Add Resource';
     return '';
   }
 
@@ -368,7 +374,7 @@ export default function CurriculumPage() {
   const canAdd = true;
 
   // Show a secondary "Create new subject" button at the subject levels.
-  const canCreateSubject = level === 4 ? !hasSemesters : level === 5;
+  const canCreateSubject = level === 3 ? !hasSemesters : level === 4;
 
   // ── Row rendering ──────────────────────────────────────────────────────────
 
@@ -392,18 +398,8 @@ export default function CurriculumPage() {
       </TableRow>
     );
 
-    // Batches
-    if (level === 2) return (
-      <TableRow key={item.id} className="cursor-pointer" onClick={() => drillInto('batch', item.id, item.name)}>
-        <TableCell className="font-medium">{item.name}</TableCell>
-        <TableCell className="text-slate-500">{item.stream_name || '—'}</TableCell>
-        <TableCell><Badge variant="outline" className={item.is_active ? 'text-green-700 border-green-300' : 'text-slate-500 border-slate-300'}>{item.is_active ? 'Active' : 'Inactive'}</Badge></TableCell>
-        <TableCell className="text-slate-400 text-xs">Click to explore →</TableCell>
-      </TableRow>
-    );
-
     // Academic Years
-    if (level === 3) return (
+    if (level === 2) return (
       <TableRow key={item.id} className={`cursor-pointer ${!item.is_active ? 'opacity-50' : ''}`}>
         <TableCell className="font-medium" onClick={() => item.is_active && drillInto('year', item.id, item.name)}>
           {item.year_order}. {item.name}
@@ -428,8 +424,8 @@ export default function CurriculumPage() {
       </TableRow>
     );
 
-    // Level 4: Semesters (when hasSemesters)
-    if (level === 4 && hasSemesters) return (
+    // Level 3: Semesters (when hasSemesters)
+    if (level === 3 && hasSemesters) return (
       <TableRow key={item.id} className={`cursor-pointer ${!item.is_active ? 'opacity-50' : ''}`}>
         <TableCell className="font-medium" onClick={() => item.is_active && drillInto('semester', item.id, item.name)}>
           {item.semester_order}. {item.name}
@@ -448,8 +444,8 @@ export default function CurriculumPage() {
       </TableRow>
     );
 
-    // Level 4 (no semesters) or Level 5: Subjects
-    if (level === 4 || level === 5) return (
+    // Level 3 (no semesters) or Level 4: Subjects
+    if (level === 3 || level === 4) return (
       <TableRow key={item.id} className="cursor-pointer">
         <TableCell className="font-medium" onClick={() => drillInto('subject', item.id, item.subject_name)}>{item.subject_name}</TableCell>
         <TableCell className="text-slate-500" onClick={() => drillInto('subject', item.id, item.subject_name)}>{item.subject_code || '—'}</TableCell>
@@ -461,7 +457,7 @@ export default function CurriculumPage() {
     );
 
     // Chapters
-    if (level === 6) return (
+    if (level === 5) return (
       <TableRow key={item.id} className={!item.is_active ? 'opacity-50' : ''}>
         <TableCell className="text-slate-500 w-10 cursor-pointer" onClick={() => item.is_active && drillInto('chapter', item.id, item.title)}>{item.chapter_order}.</TableCell>
         <TableCell className="font-medium cursor-pointer" onClick={() => item.is_active && drillInto('chapter', item.id, item.title)}>{item.title}</TableCell>
@@ -478,7 +474,7 @@ export default function CurriculumPage() {
     );
 
     // Resources
-    if (level === 7) return (
+    if (level === 6) return (
       <TableRow key={item.id} className={!item.is_active ? 'opacity-50' : ''}>
         <TableCell>
           <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full capitalize ${TYPE_COLORS[item.type] || ''}`}>
@@ -510,12 +506,11 @@ export default function CurriculumPage() {
   function renderTableHead() {
     if (level === 0) return <TableRow><TableHead>University</TableHead><TableHead>Code</TableHead><TableHead>Status</TableHead><TableHead /></TableRow>;
     if (level === 1) return <TableRow><TableHead>Stream / Course</TableHead><TableHead>Status</TableHead><TableHead /></TableRow>;
-    if (level === 2) return <TableRow><TableHead>Batch</TableHead><TableHead>Stream</TableHead><TableHead>Status</TableHead><TableHead /></TableRow>;
-    if (level === 3) return <TableRow><TableHead>Academic Year</TableHead><TableHead>Semesters</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow>;
-    if (level === 4 && hasSemesters) return <TableRow><TableHead>Semester</TableHead><TableHead>Subjects</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow>;
-    if (level === 4 || level === 5) return <TableRow><TableHead>Subject</TableHead><TableHead>Code</TableHead><TableHead /><TableHead className="text-right">Actions</TableHead></TableRow>;
-    if (level === 6) return <TableRow><TableHead className="w-10">#</TableHead><TableHead>Chapter Title</TableHead><TableHead>Description</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow>;
-    if (level === 7) return <TableRow><TableHead>Type</TableHead><TableHead>Title</TableHead><TableHead>Link</TableHead><TableHead>Description</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow>;
+    if (level === 2) return <TableRow><TableHead>Academic Year</TableHead><TableHead>Semesters</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow>;
+    if (level === 3 && hasSemesters) return <TableRow><TableHead>Semester</TableHead><TableHead>Subjects</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow>;
+    if (level === 3 || level === 4) return <TableRow><TableHead>Subject</TableHead><TableHead>Code</TableHead><TableHead /><TableHead className="text-right">Actions</TableHead></TableRow>;
+    if (level === 5) return <TableRow><TableHead className="w-10">#</TableHead><TableHead>Chapter Title</TableHead><TableHead>Description</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow>;
+    if (level === 6) return <TableRow><TableHead>Type</TableHead><TableHead>Title</TableHead><TableHead>Link</TableHead><TableHead>Description</TableHead><TableHead>Status</TableHead><TableHead className="text-right">Actions</TableHead></TableRow>;
     return null;
   }
 
@@ -533,25 +528,6 @@ export default function CurriculumPage() {
     );
     if (level === 2) return (
       <>
-        <div className="space-y-1"><Label>Batch Name *</Label><Input value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Batch 2024–2027" required /></div>
-        {items.length > 0 && (
-          <div className="space-y-1">
-            <Label>Copy curriculum structure from</Label>
-            <Select value={form.copy_from_batch_id || ''} onValueChange={(v) => setForm({ ...form, copy_from_batch_id: v })}>
-              <SelectTrigger className="w-full"><SelectValue placeholder="None (start blank)" /></SelectTrigger>
-              <SelectContent>
-                {items.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.name}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              Copies academic years, semesters, subjects, chapters, and learning resources from the selected batch of this stream.
-            </p>
-          </div>
-        )}
-      </>
-    );
-    if (level === 3) return (
-      <>
         <div className="space-y-1">
           <Label>Name *</Label>
           <Input value={form.name || ''} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. First Year" required />
@@ -563,7 +539,7 @@ export default function CurriculumPage() {
       </>
     );
 
-    if (level === 4 && hasSemesters) return (
+    if (level === 3 && hasSemesters) return (
       <>
         <div className="space-y-1">
           <Label>Semester Name *</Label>
@@ -576,23 +552,36 @@ export default function CurriculumPage() {
       </>
     );
 
-    if (level === 4 || level === 5) return (
-      <div className="space-y-1">
-        <Label>Subject *</Label>
-        <Select value={form.subject_id || ''} onValueChange={(v) => setForm({ ...form, subject_id: v })}>
-          <SelectTrigger className="w-full"><SelectValue placeholder="Select a subject" /></SelectTrigger>
-          <SelectContent>
-            {availableSubjects.length === 0
-              ? <SelectItem value="__none" disabled>No more subjects available</SelectItem>
-              : availableSubjects.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}{s.subject_code ? ` (${s.subject_code})` : ''}</SelectItem>)
-            }
-          </SelectContent>
-        </Select>
-        <p className="text-xs text-slate-400 mt-1">Only subjects for this university that aren't already in this year are shown.</p>
+    if (level === 3 || level === 4) return (
+      <div className="space-y-3">
+        <div className="flex items-center justify-between rounded-md border border-slate-200 dark:border-slate-700 px-3 py-2">
+          <div>
+            <Label className="mb-0">Common subject</Label>
+            <p className="text-xs text-slate-400">Share a subject (and its chapters + recordings) with other streams in this university.</p>
+          </div>
+          <Switch checked={commonSubject} onCheckedChange={handleCommonToggle} />
+        </div>
+        <div className="space-y-1">
+          <Label>Subject *</Label>
+          <Select value={form.subject_id || ''} onValueChange={(v) => setForm({ ...form, subject_id: v })}>
+            <SelectTrigger className="w-full"><SelectValue placeholder="Select a subject" /></SelectTrigger>
+            <SelectContent>
+              {availableSubjects.length === 0
+                ? <SelectItem value="__none" disabled>No more subjects available</SelectItem>
+                : availableSubjects.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}{s.subject_code ? ` (${s.subject_code})` : ''}</SelectItem>)
+              }
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-slate-400 mt-1">
+            {commonSubject
+              ? 'Showing every subject in this university not already in this year. Picking one links it here as a common subject.'
+              : "Only subjects for this stream that aren't already in this year are shown."}
+          </p>
+        </div>
       </div>
     );
 
-    if (level === 6) return (
+    if (level === 5) return (
       <>
         <div className="space-y-1">
           <Label>Chapter Title *</Label>
@@ -609,7 +598,7 @@ export default function CurriculumPage() {
       </>
     );
 
-    if (level === 7) return (
+    if (level === 6) return (
       <>
         <div className="space-y-1">
           <Label>Type *</Label>
@@ -641,12 +630,11 @@ export default function CurriculumPage() {
   function dialogTitle() {
     if (level === 0) return 'Add University';
     if (level === 1) return 'Add Stream / Course';
-    if (level === 2) return 'Add Batch';
-    if (level === 3) return editing ? 'Edit Academic Year' : 'Add Academic Year';
-    if (level === 4 && hasSemesters) return editing ? 'Edit Semester' : 'Add Semester';
-    if (level === 4 || level === 5) return 'Assign Existing Subject';
-    if (level === 6) return editing ? 'Edit Chapter' : 'Add Chapter';
-    if (level === 7) return editing ? 'Edit Resource' : 'Add Learning Resource';
+    if (level === 2) return editing ? 'Edit Academic Year' : 'Add Academic Year';
+    if (level === 3 && hasSemesters) return editing ? 'Edit Semester' : 'Add Semester';
+    if (level === 3 || level === 4) return 'Assign Existing Subject';
+    if (level === 5) return editing ? 'Edit Chapter' : 'Add Chapter';
+    if (level === 6) return editing ? 'Edit Resource' : 'Add Learning Resource';
     return '';
   }
 
@@ -689,7 +677,7 @@ export default function CurriculumPage() {
         </CardHeader>
         <CardContent>
           {loading ? (
-            <p className="text-sm text-slate-500 py-6 text-center">Loading...</p>
+            <SkeletonTable rows={5} cols={4} />
           ) : items.length === 0 ? (
             <p className="text-sm text-slate-500 py-6 text-center">Nothing found here.</p>
           ) : (
@@ -755,7 +743,7 @@ export default function CurriculumPage() {
               <Input value={createSubjectForm.subject_code} onChange={(e) => setCreateSubjectForm({ ...createSubjectForm, subject_code: e.target.value })} placeholder="e.g. BCOM101" />
             </div>
             <p className="text-xs text-slate-400">
-              The subject will be created and assigned to {semesterLabel ? `${yearLabel} · ${semesterLabel}` : yearLabel} of this batch.
+              The subject will be created and assigned to {semesterLabel ? `${yearLabel} · ${semesterLabel}` : yearLabel} of this stream.
             </p>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setCreateSubjectOpen(false)}>Cancel</Button>

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import client from '@/api/client';
+import { SkeletonCards } from '@/components/Skeletons';
 
 export default function TimetablePage() {
   const navigate = useNavigate();
@@ -48,7 +49,7 @@ export default function TimetablePage() {
       </div>
 
       {loading ? (
-        <p className="text-sm text-slate-500 dark:text-slate-400">Loading...</p>
+        <SkeletonCards count={6} />
       ) : universities.length === 0 ? (
         <div className="rounded-xl border border-dashed border-slate-300 dark:border-slate-700 p-10 text-center">
           <p className="text-sm text-slate-500 dark:text-slate-400">

@@ -108,7 +108,7 @@ export default function App() {
           <Route path="/settings/batches" element={<ProtectedRoute adminOnly><BatchesPage /></ProtectedRoute>} />
           <Route path="/settings/subjects" element={<ProtectedRoute adminOnly><SubjectsPage /></ProtectedRoute>} />
         </Routes>
-        <Toaster />
+        <Toaster position="top-right" offset={40} />
         </ConfirmProvider>
       </AuthProvider>
     </BrowserRouter>

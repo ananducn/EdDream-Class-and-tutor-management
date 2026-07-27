@@ -56,6 +56,169 @@ async function syncClassForSlot(slot, timetable, userId) {
   `;
 }
 
+// The timetable for another batch in the SAME week as `source`, creating one if
+// that batch has no grid for the week yet. Used to fan a common class out across
+// batches without the user having to visit each batch's timetable first.
+async function findOrCreateWeekTimetable(batchId, source, userId) {
+  const batch = await sql`SELECT id, name, university_id FROM batches WHERE id = ${batchId}`;
+  if (!batch[0]) return null;
+
+  const found = await sql`
+    SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date
+    FROM timetables
+    WHERE batch_id = ${batchId} AND week_start_date = ${source.week_start_date}
+    ORDER BY created_at LIMIT 1
+  `;
+  if (found[0]) return { ...found[0], batch_name: batch[0].name };
+
+  const label = `Week of ${source.week_start_date} – ${batch[0].name}`;
+  const made = await sql`
+    INSERT INTO timetables (name, university_id, batch_id, week_start_date, created_by)
+    VALUES (${label}, ${batch[0].university_id}, ${batchId}, ${source.week_start_date}, ${userId})
+    RETURNING *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date
+  `;
+  return { ...made[0], batch_name: batch[0].name };
+}
+
+// Every slot id that an edit/delete on `slotId` should touch: the whole group for
+// a common class, or just the slot itself. Returns [] when the slot doesn't exist
+// in the given timetable, so callers can 404.
+async function groupSlotIds(slotId, timetableId) {
+  const rows = await sql`
+    SELECT id, slot_group_id FROM timetable_slots
+    WHERE id = ${slotId} AND timetable_id = ${timetableId}
+  `;
+  if (!rows[0]) return [];
+  if (!rows[0].slot_group_id) return [rows[0].id];
+  const group = await sql`SELECT id FROM timetable_slots WHERE slot_group_id = ${rows[0].slot_group_id}`;
+  return group.map((r) => r.id);
+}
+
+// Removing a slot removes the class it created. class_entries.timetable_slot_id is
+// ON DELETE SET NULL, so without this the class row would survive the slot as an
+// orphan and keep showing up in Class Overview. Call BEFORE deleting the slots.
+async function deleteClassesForSlots(slotIds) {
+  if (!slotIds || slotIds.length === 0) return 0;
+  // Remember the class groups involved: a common class created from the Classes
+  // page spreads one class_group_id over several batches, each with its own slot,
+  // so removing one slot can leave the rest of that group pointing at a row we are
+  // about to delete.
+  const doomed = await sql`SELECT id, class_group_id FROM class_entries WHERE timetable_slot_id = ANY(${slotIds})`;
+  const gone = await sql`DELETE FROM class_entries WHERE timetable_slot_id = ANY(${slotIds}) RETURNING id`;
+  await normalizeClassGroups(doomed.map((c) => c.class_group_id));
+  return gone.length;
+}
+
+// Same repair as normalizeSlotGroups, for the Classes page's common-class groups:
+// a group left with one member is no longer common, and a group id naming a
+// deleted row is re-pointed at a survivor.
+async function normalizeClassGroups(groupIds) {
+  const ids = [...new Set((groupIds || []).filter(Boolean))];
+  for (const gid of ids) {
+    const members = await sql`SELECT id FROM class_entries WHERE class_group_id = ${gid} ORDER BY id`;
+    if (members.length === 0) continue;
+    if (members.length === 1) {
+      await sql`UPDATE class_entries SET class_group_id = NULL WHERE id = ${members[0].id}`;
+      continue;
+    }
+    if (!members.some((m) => m.id === gid)) {
+      await sql`UPDATE class_entries SET class_group_id = ${members[0].id} WHERE class_group_id = ${gid}`;
+    }
+  }
+}
+
+// Repair common-class groups after members disappear (deleting a single batch's
+// week removes its slot but leaves the other batches' copies). A group that drops
+// to one member is no longer common, and a group whose id points at a deleted row
+// is re-pointed at a surviving member so the id always names a real slot.
+async function normalizeSlotGroups(groupIds) {
+  const ids = [...new Set((groupIds || []).filter(Boolean))];
+  for (const gid of ids) {
+    const members = await sql`SELECT id FROM timetable_slots WHERE slot_group_id = ${gid} ORDER BY id`;
+    if (members.length === 0) continue;
+    if (members.length === 1) {
+      await sql`UPDATE timetable_slots SET slot_group_id = NULL WHERE id = ${members[0].id}`;
+      continue;
+    }
+    if (!members.some((m) => m.id === gid)) {
+      const newId = members[0].id;
+      await sql`UPDATE timetable_slots SET slot_group_id = ${newId} WHERE slot_group_id = ${gid}`;
+    }
+  }
+}
+
+// Bring a slot's sharing in line with `desiredBatchIds` (the OTHER batches it
+// should belong to). Adds copies for newly ticked batches, deletes the copies of
+// unticked ones, and keeps slot_group_id consistent — cleared when the slot ends
+// up alone again. `primary` is never removed. Returns the resulting members, or
+// { error } if a new batch already has a clashing slot (checked before writing).
+async function reconcileSlotGroup({ primary, desiredBatchIds, existing, userId }) {
+  const source = await sql`
+    SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date
+    FROM timetables WHERE id = ${primary.timetable_id}
+  `;
+  if (!source[0]) return existing;
+
+  // Which batch each current member belongs to.
+  const withBatch = [];
+  for (const slot of existing) {
+    const tt = await sql`SELECT batch_id FROM timetables WHERE id = ${slot.timetable_id}`;
+    withBatch.push({ slot, batchId: tt[0]?.batch_id ?? null });
+  }
+
+  const desired = new Set(desiredBatchIds.filter((b) => b !== source[0].batch_id));
+  const keep = withBatch.filter((m) => m.slot.id === primary.id || desired.has(m.batchId));
+  const drop = withBatch.filter((m) => m.slot.id !== primary.id && !desired.has(m.batchId));
+  const alreadyThere = new Set(keep.map((m) => m.batchId));
+  const toAdd = [...desired].filter((b) => !alreadyThere.has(b));
+
+  // Resolve target timetables and pre-check clashes before any write.
+  const targets = [];
+  for (const bId of toAdd) {
+    const target = await findOrCreateWeekTimetable(bId, source[0], userId);
+    if (!target) continue;
+    const sameDay = await sql`
+      SELECT start_time, end_time FROM timetable_slots
+      WHERE timetable_id = ${target.id} AND day_of_week = ${primary.day_of_week}
+    `;
+    const clash = sameDay.some((s) => {
+      if (!primary.start_time || !primary.end_time || !s.start_time || !s.end_time) return false;
+      return primary.start_time.slice(0, 5) < s.end_time.slice(0, 5)
+          && s.start_time.slice(0, 5) < primary.end_time.slice(0, 5);
+    });
+    if (clash) {
+      return { error: `A slot already exists on ${primary.day_of_week} at this time for ${target.batch_name}.` };
+    }
+    targets.push(target);
+  }
+
+  if (drop.length > 0) {
+    const dropIds = drop.map((m) => m.slot.id);
+    await deleteClassesForSlots(dropIds);
+    await sql`DELETE FROM timetable_slots WHERE id = ANY(${dropIds})`;
+  }
+
+  const members = keep.map((m) => m.slot);
+  for (const target of targets) {
+    const made = await sql`
+      INSERT INTO timetable_slots (timetable_id, day_of_week, start_time, end_time, faculty_id, subject_id, notes, class_taken_status)
+      VALUES (${target.id}, ${primary.day_of_week}, ${primary.start_time || null}, ${primary.end_time || null},
+              ${primary.faculty_id || null}, ${primary.subject_id || null}, ${primary.notes || null}, ${primary.class_taken_status})
+      RETURNING *
+    `;
+    if (made[0].class_taken_status !== 'not_taken') {
+      await syncClassForSlot(made[0], target, userId);
+    }
+    members.push(made[0]);
+  }
+
+  // One member left means it is no longer a common class.
+  const groupId = members.length > 1 ? (primary.slot_group_id || primary.id) : null;
+  await sql`UPDATE timetable_slots SET slot_group_id = ${groupId} WHERE id = ANY(${members.map((m) => m.id)})`;
+  members.forEach((m) => { m.slot_group_id = groupId; });
+  return members;
+}
+
 async function slotContext(row, timetableId) {
   const rows = await sql`
     SELECT
@@ -113,8 +276,27 @@ router.get('/:id', auth, async (req, res, next) => {
     `;
     if (!timetables[0]) return res.status(404).json({ error: 'Not found.' });
 
+    // shared_batches lists the OTHER batches a common-class slot also belongs to,
+    // so the grid can badge it without a second round trip.
     const slots = await sql`
-      SELECT ts.*, f.name AS faculty_name, sub.name AS subject_name
+      SELECT ts.*, f.name AS faculty_name, sub.name AS subject_name,
+             COALESCE((
+               SELECT array_agg(b2.name ORDER BY b2.name)
+               FROM timetable_slots ts2
+               JOIN timetables t2 ON t2.id = ts2.timetable_id
+               JOIN batches b2 ON b2.id = t2.batch_id
+               WHERE ts.slot_group_id IS NOT NULL
+                 AND ts2.slot_group_id = ts.slot_group_id
+                 AND ts2.id <> ts.id
+             ), '{}') AS shared_batches,
+             COALESCE((
+               SELECT array_agg(t2.batch_id)
+               FROM timetable_slots ts2
+               JOIN timetables t2 ON t2.id = ts2.timetable_id
+               WHERE ts.slot_group_id IS NOT NULL
+                 AND ts2.slot_group_id = ts.slot_group_id
+                 AND ts2.id <> ts.id
+             ), '{}') AS shared_batch_ids
       FROM timetable_slots ts
       LEFT JOIN faculty f ON f.id = ts.faculty_id
       LEFT JOIN subjects sub ON sub.id = ts.subject_id
@@ -165,16 +347,25 @@ router.put('/:id', auth, async (req, res, next) => {
 router.delete('/:id', auth, async (req, res, next) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden.' });
+    // Slots cascade with the timetable, so their classes have to go first —
+    // otherwise deleting a week would leave orphaned class entries behind.
+    const slots = await sql`SELECT id, slot_group_id FROM timetable_slots WHERE timetable_id = ${req.params.id}`;
+    const slotIds = slots.map((s) => s.id);
+    const classesRemoved = await deleteClassesForSlots(slotIds);
     const rows = await sql`DELETE FROM timetables WHERE id = ${req.params.id} RETURNING *`;
     if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
-    await logActivity(req.user.id, req.user.name, req.user.role, 'delete_timetable', 'timetable', rows[0].id, `Deleted timetable: ${rows[0].name}`);
-    res.json({ message: 'Deleted.' });
+    // Common slots in this week may have siblings in other batches — tidy those
+    // groups now that some members are gone.
+    await normalizeSlotGroups(slots.map((s) => s.slot_group_id));
+    await logActivity(req.user.id, req.user.name, req.user.role, 'delete_timetable', 'timetable', rows[0].id,
+      `Deleted timetable: ${rows[0].name}${slotIds.length ? ` (${slotIds.length} slots, ${classesRemoved} linked classes)` : ''}`);
+    res.json({ message: 'Deleted.', slots_removed: slotIds.length, classes_removed: classesRemoved });
   } catch (err) { next(err); }
 });
 
 router.post('/:id/slots', auth, async (req, res, next) => {
   try {
-    const { day_of_week, start_time, end_time, faculty_id, subject_id, notes, class_taken_status } = req.body;
+    const { day_of_week, start_time, end_time, faculty_id, subject_id, notes, class_taken_status, batch_ids } = req.body;
     if (!day_of_week || !DAYS.includes(day_of_week)) {
       return res.status(400).json({ error: 'Valid day_of_week is required.' });
     }
@@ -182,37 +373,71 @@ router.post('/:id/slots', auth, async (req, res, next) => {
     const tt = await sql`SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date FROM timetables WHERE id = ${req.params.id}`;
     if (!tt[0]) return res.status(404).json({ error: 'Timetable not found.' });
 
-    // Clash check: a slot for the same day with overlapping time already in this timetable.
-    const sameDay = await sql`
-      SELECT start_time, end_time FROM timetable_slots
-      WHERE timetable_id = ${req.params.id} AND day_of_week = ${day_of_week}
-    `;
-    const clash = sameDay.some((s) => {
-      if (!start_time || !end_time || !s.start_time || !s.end_time) return false;
-      return start_time.slice(0, 5) < s.end_time.slice(0, 5) && s.start_time.slice(0, 5) < end_time.slice(0, 5);
-    });
-    if (clash) {
-      return res.status(409).json({ error: `A slot already exists on ${day_of_week} at this time for this batch.` });
+    // A "common class" is the same slot in several batches' grids for the same
+    // week. Resolve every extra batch to its own timetable for this week (creating
+    // one if that batch has none yet), then write one slot per timetable.
+    const extraBatchIds = (Array.isArray(batch_ids) ? batch_ids : [])
+      .map(Number)
+      .filter((b) => b && b !== tt[0].batch_id);
+
+    const targets = [tt[0]];
+    for (const bId of extraBatchIds) {
+      const found = await findOrCreateWeekTimetable(bId, tt[0], req.user.id);
+      if (found) targets.push(found);
     }
 
-    const rows = await sql`
-      INSERT INTO timetable_slots (timetable_id, day_of_week, start_time, end_time, faculty_id, subject_id, notes, class_taken_status)
-      VALUES (${req.params.id}, ${day_of_week}, ${start_time || null}, ${end_time || null},
-              ${faculty_id || null}, ${subject_id || null}, ${notes || null}, ${class_taken_status || 'scheduled'})
-      RETURNING *
-    `;
-    if (rows[0].class_taken_status !== 'not_taken') {
-      await syncClassForSlot(rows[0], tt[0], req.user.id);
+    // Pre-validate every target so one clash aborts the whole group before any
+    // row is written — same all-or-nothing rule the Classes page uses.
+    for (const target of targets) {
+      const sameDay = await sql`
+        SELECT start_time, end_time FROM timetable_slots
+        WHERE timetable_id = ${target.id} AND day_of_week = ${day_of_week}
+      `;
+      const clash = sameDay.some((s) => {
+        if (!start_time || !end_time || !s.start_time || !s.end_time) return false;
+        return start_time.slice(0, 5) < s.end_time.slice(0, 5) && s.start_time.slice(0, 5) < end_time.slice(0, 5);
+      });
+      if (clash) {
+        const who = target.id === tt[0].id ? 'this batch' : (target.batch_name || `batch ${target.batch_id}`);
+        return res.status(409).json({ error: `A slot already exists on ${day_of_week} at this time for ${who}.` });
+      }
     }
-    const addCtx = await slotContext(rows[0], req.params.id);
-    await logActivity(req.user.id, req.user.name, req.user.role, 'add_slot', 'timetable_slot', rows[0].id, `Added slot: ${slotDetail(rows[0], addCtx)}`);
-    res.status(201).json(rows[0]);
+
+    const created = [];
+    for (const target of targets) {
+      const rows = await sql`
+        INSERT INTO timetable_slots (timetable_id, day_of_week, start_time, end_time, faculty_id, subject_id, notes, class_taken_status)
+        VALUES (${target.id}, ${day_of_week}, ${start_time || null}, ${end_time || null},
+                ${faculty_id || null}, ${subject_id || null}, ${notes || null}, ${class_taken_status || 'scheduled'})
+        RETURNING *
+      `;
+      if (rows[0].class_taken_status !== 'not_taken') {
+        await syncClassForSlot(rows[0], target, req.user.id);
+      }
+      created.push({ slot: rows[0], timetable: target });
+    }
+
+    // Tie the copies together (group id = the first slot's id) so a later edit or
+    // delete on any one of them applies to the whole set.
+    if (created.length > 1) {
+      const groupId = created[0].slot.id;
+      const ids = created.map((c) => c.slot.id);
+      await sql`UPDATE timetable_slots SET slot_group_id = ${groupId} WHERE id = ANY(${ids})`;
+      created.forEach((c) => { c.slot.slot_group_id = groupId; });
+    }
+
+    for (const c of created) {
+      const ctx = await slotContext(c.slot, c.timetable.id);
+      await logActivity(req.user.id, req.user.name, req.user.role, 'add_slot', 'timetable_slot', c.slot.id,
+        `Added slot${created.length > 1 ? ' (common class)' : ''}: ${slotDetail(c.slot, ctx)}`);
+    }
+    res.status(201).json({ ...created[0].slot, shared_count: created.length });
   } catch (err) { next(err); }
 });
 
 router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
   try {
-    const { day_of_week, start_time, end_time, faculty_id, subject_id, notes, class_taken_status } = req.body;
+    const { day_of_week, start_time, end_time, faculty_id, subject_id, notes, class_taken_status, batch_ids } = req.body;
 
     if (class_taken_status === 'taken') {
       const [tt, existing] = await Promise.all([
@@ -246,31 +471,51 @@ router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
         notes = CASE WHEN ${notes !== undefined}::boolean THEN ${notes || null}::text ELSE notes END,
         class_taken_status = COALESCE(${class_taken_status || null}, class_taken_status),
         updated_at = NOW()
-      WHERE id = ${req.params.slotId} AND timetable_id = ${req.params.id}
+      WHERE id = ANY(${await groupSlotIds(req.params.slotId, req.params.id)})
       RETURNING *
     `;
-    if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
+    const primary = rows.find((r) => String(r.id) === String(req.params.slotId));
+    if (!primary) return res.status(404).json({ error: 'Not found.' });
 
-    if (class_taken_status) {
-      const tt = await sql`SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date FROM timetables WHERE id = ${req.params.id}`;
-      await syncClassForSlot(rows[0], tt[0], req.user.id);
+    // Changing WHO the slot is shared with. `batch_ids` is the full desired set of
+    // OTHER batches; absent means "leave sharing alone".
+    let members = rows;
+    if (batch_ids !== undefined) {
+      members = await reconcileSlotGroup({
+        primary,
+        desiredBatchIds: Array.isArray(batch_ids) ? batch_ids.map(Number).filter(Boolean) : [],
+        existing: rows,
+        userId: req.user.id,
+      });
+      if (members.error) return res.status(409).json({ error: members.error });
     }
-    const updCtx = await slotContext(rows[0], req.params.id);
-    await logActivity(req.user.id, req.user.name, req.user.role, 'update_slot', 'timetable_slot', rows[0].id,
-      `Updated slot (status: ${rows[0].class_taken_status}): ${slotDetail(rows[0], updCtx)}`);
-    res.json(rows[0]);
+
+    // A common class is edited as a whole, so every batch's copy is re-synced.
+    if (class_taken_status) {
+      for (const row of members) {
+        const tt = await sql`SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date FROM timetables WHERE id = ${row.timetable_id}`;
+        await syncClassForSlot(row, tt[0], req.user.id);
+      }
+    }
+    const updCtx = await slotContext(primary, primary.timetable_id);
+    await logActivity(req.user.id, req.user.name, req.user.role, 'update_slot', 'timetable_slot', primary.id,
+      `Updated slot${members.length > 1 ? ` (common class, ${members.length} batches)` : ''} (status: ${primary.class_taken_status}): ${slotDetail(primary, updCtx)}`);
+    res.json({ ...primary, shared_count: members.length });
   } catch (err) { next(err); }
 });
 
 router.delete('/:id/slots/:slotId', auth, async (req, res, next) => {
   try {
-    const rows = await sql`
-      DELETE FROM timetable_slots WHERE id = ${req.params.slotId} AND timetable_id = ${req.params.id} RETURNING *
-    `;
-    if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
-    const delCtx = await slotContext(rows[0], req.params.id);
-    await logActivity(req.user.id, req.user.name, req.user.role, 'delete_slot', 'timetable_slot', rows[0].id, `Deleted slot: ${slotDetail(rows[0], delCtx)}`);
-    res.json({ message: 'Deleted.' });
+    // A common class is removed from every batch it was shared with.
+    const ids = await groupSlotIds(req.params.slotId, req.params.id);
+    if (ids.length === 0) return res.status(404).json({ error: 'Not found.' });
+    const classesRemoved = await deleteClassesForSlots(ids);
+    const rows = await sql`DELETE FROM timetable_slots WHERE id = ANY(${ids}) RETURNING *`;
+    const primary = rows.find((r) => String(r.id) === String(req.params.slotId)) || rows[0];
+    const delCtx = await slotContext(primary, req.params.id);
+    await logActivity(req.user.id, req.user.name, req.user.role, 'delete_slot', 'timetable_slot', primary.id,
+      `Deleted slot${rows.length > 1 ? ` (common class, ${rows.length} batches)` : ''}${classesRemoved ? ` and ${classesRemoved} linked class${classesRemoved > 1 ? 'es' : ''}` : ''}: ${slotDetail(primary, delCtx)}`);
+    res.json({ message: 'Deleted.', deleted: rows.length, classes_removed: classesRemoved });
   } catch (err) { next(err); }
 });
 

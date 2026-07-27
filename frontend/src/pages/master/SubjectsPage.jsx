@@ -11,17 +11,18 @@ import { Separator } from '@/components/ui/separator';
 import StatusBadge from '@/components/StatusBadge';
 import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
+import { SkeletonTable } from '@/components/Skeletons';
 
 const emptyForm = { name: '', subject_code: '', university_id: '', stream_id: '' };
-const emptyAssignment = { batch_id: '', academic_year_id: '', semester_id: '' };
+const emptyAssignment = { academic_year_id: '', semester_id: '' };
 const emptyFilters = { search: '', university_id: '', stream_id: '', status: '', batch_id: '', academic_year_id: '', semester_id: '', assigned: '' };
 
 export default function SubjectsPage() {
   const confirm = useConfirm();
   const [subjects, setSubjects] = useState([]);
   const [universities, setUniversities] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [streams, setStreams] = useState([]);
-  const [allBatches, setAllBatches] = useState([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
@@ -45,13 +46,8 @@ export default function SubjectsPage() {
     return true;
   }), [subjects, filters.search, filters.status]);
 
-  // Batches scoped to the currently selected stream in the form
-  const formBatches = useMemo(() =>
-    form.stream_id ? allBatches.filter((b) => String(b.stream_id) === form.stream_id) : [],
-    [allBatches, form.stream_id]
-  );
-
   async function load(f = filters) {
+    setLoading(true);
     try {
       const q = new URLSearchParams({ include_inactive: 'true' });
       if (f.university_id)    q.set('university_id', f.university_id);
@@ -61,16 +57,16 @@ export default function SubjectsPage() {
       if (f.semester_id)      q.set('semester_id', f.semester_id);
       if (f.assigned)         q.set('assigned', f.assigned);
 
-      const [subRes, uniRes, batchRes] = await Promise.all([
+      const [subRes, uniRes] = await Promise.all([
         client.get(`/subjects?${q}`),
         client.get('/universities'),
-        client.get('/batches?include_inactive=true'),
       ]);
       setSubjects(subRes.data);
       setUniversities(uniRes.data);
-      setAllBatches(batchRes.data);
     } catch {
       toast.error('Failed to load data.');
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -99,21 +95,20 @@ export default function SubjectsPage() {
     setFilterYears([]);
     setFilterSemesters([]);
     if (v) {
-      const res = await client.get(`/batches?stream_id=${v}`);
-      setFilterBatches(res.data);
+      // Academic years are stream-level now, so load them alongside batches.
+      const [batchRes, yearRes] = await Promise.all([
+        client.get(`/batches?stream_id=${v}`),
+        client.get(`/academic-years?stream_id=${v}`),
+      ]);
+      setFilterBatches(batchRes.data);
+      setFilterYears(yearRes.data);
     }
     load(next);
   }
 
-  async function onFilterBatchChange(v) {
-    const next = { ...filters, batch_id: v, academic_year_id: '', semester_id: '' };
+  function onFilterBatchChange(v) {
+    const next = { ...filters, batch_id: v };
     setFilters(next);
-    setFilterYears([]);
-    setFilterSemesters([]);
-    if (v) {
-      const res = await client.get(`/academic-years?batch_id=${v}`);
-      setFilterYears(res.data);
-    }
     load(next);
   }
 
@@ -157,17 +152,19 @@ export default function SubjectsPage() {
     } catch { setStreams([]); }
   }
 
-  async function loadYearsForRow(index, batchId) {
-    if (!batchId) {
-      setAssignmentYears((prev) => ({ ...prev, [index]: [] }));
+  // Academic years belong to the stream now, so the whole assignment builder
+  // shares one year list keyed at [0].
+  async function loadYearsForStream(streamId) {
+    if (!streamId) {
+      setAssignmentYears({});
       setAssignmentSemesters([]);
       return;
     }
     try {
-      const res = await client.get(`/academic-years?batch_id=${batchId}`);
-      setAssignmentYears((prev) => ({ ...prev, [index]: res.data }));
+      const res = await client.get(`/academic-years?stream_id=${streamId}`);
+      setAssignmentYears({ 0: res.data });
     } catch {
-      setAssignmentYears((prev) => ({ ...prev, [index]: [] }));
+      setAssignmentYears({});
     }
   }
 
@@ -189,18 +186,12 @@ export default function SubjectsPage() {
   function handleStreamChange(v) {
     setForm({ ...form, stream_id: v });
     setAssignments([{ ...emptyAssignment }]);
-    setAssignmentYears({});
     setAssignmentSemesters([]);
+    loadYearsForStream(v);
   }
 
   function updateAssignment(index, field, value) {
     const next = assignments.map((a, i) => i === index ? { ...a, [field]: value } : a);
-    if (field === 'batch_id') {
-      next[index].academic_year_id = '';
-      next[index].semester_id = '';
-      setAssignmentSemesters([]);
-      loadYearsForRow(index, value);
-    }
     if (field === 'academic_year_id') {
       next[index].semester_id = '';
       loadSemestersForYear(value);
@@ -237,13 +228,12 @@ export default function SubjectsPage() {
         setAssignmentSemesters([]);
       } else {
         const row = {
-          batch_id: String(first.batch_id),
           academic_year_id: String(first.academic_year_id),
           semester_id: first.semester_id ? String(first.semester_id) : '',
         };
         setAssignments([row]);
         const [yr, sem] = await Promise.all([
-          client.get(`/academic-years?batch_id=${first.batch_id}`),
+          client.get(`/academic-years?stream_id=${s.stream_id}`),
           client.get(`/semesters?academic_year_id=${first.academic_year_id}`),
         ]);
         setAssignmentYears({ 0: yr.data });
@@ -260,7 +250,7 @@ export default function SubjectsPage() {
     e.preventDefault();
     const validAssignments = assignments.filter((a) => a.academic_year_id);
     if (validAssignments.length === 0) {
-      toast.error('At least one Batch + Academic Year assignment is required.');
+      toast.error('At least one Academic Year assignment is required.');
       return;
     }
     if (assignmentSemesters.length > 0 && !assignments[0].semester_id) {
@@ -410,6 +400,7 @@ export default function SubjectsPage() {
           <Button size="sm" onClick={openAdd}>Add New</Button>
         </CardHeader>
         <CardContent>
+          {loading ? <SkeletonTable rows={5} cols={6} /> : (
           <Table>
             <TableHeader>
               <TableRow>
@@ -447,6 +438,7 @@ export default function SubjectsPage() {
               ))}
             </TableBody>
           </Table>
+          )}
         </CardContent>
       </Card>
 
@@ -487,39 +479,25 @@ export default function SubjectsPage() {
 
             <div className="space-y-2">
               <Label className="text-sm font-medium">
-                Assign to Batch &amp; Academic Year *
+                Assign to Academic Year *
               </Label>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Select which batch and year this subject is taught in. Add more rows for multiple assignments.
+                Pick the stream's academic year this subject is taught in. Every batch of the stream inherits it.
               </p>
 
-              <div className="flex gap-2 items-start">
-                <div className="flex-1">
-                  <Select
-                    value={assignments[0].batch_id}
-                    onValueChange={(v) => updateAssignment(0, 'batch_id', v)}
-                    disabled={!form.stream_id}
-                  >
-                    <SelectTrigger className="w-full"><SelectValue placeholder="Batch" /></SelectTrigger>
-                    <SelectContent>
-                      {formBatches.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex-1">
-                  <Select
-                    value={assignments[0].academic_year_id}
-                    onValueChange={(v) => updateAssignment(0, 'academic_year_id', v)}
-                    disabled={!assignments[0].batch_id}
-                  >
-                    <SelectTrigger className="w-full"><SelectValue placeholder="Year" /></SelectTrigger>
-                    <SelectContent>
-                      {(assignmentYears[0] || []).map((y) => (
-                        <SelectItem key={y.id} value={String(y.id)}>{y.name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
+              <div className="flex-1">
+                <Select
+                  value={assignments[0].academic_year_id}
+                  onValueChange={(v) => updateAssignment(0, 'academic_year_id', v)}
+                  disabled={!form.stream_id}
+                >
+                  <SelectTrigger className="w-full"><SelectValue placeholder="Academic Year" /></SelectTrigger>
+                  <SelectContent>
+                    {(assignmentYears[0] || []).map((y) => (
+                      <SelectItem key={y.id} value={String(y.id)}>{y.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
               {assignmentSemesters.length > 0 && (
                 <div className="space-y-1">

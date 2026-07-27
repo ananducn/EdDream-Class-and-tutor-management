@@ -1,11 +1,12 @@
 import express from 'express';
 import { sql } from '../db.js';
 import { auth } from '../middleware/auth.js';
+import { cacheRoute } from '../middleware/cache.js';
 import { logActivity } from '../middleware/logger.js';
 
 const router = express.Router();
 
-router.get('/', auth, async (req, res) => {
+router.get('/', auth, cacheRoute(60000), async (req, res) => {
   const { university_id, stream_id, include_inactive } = req.query;
   const all = include_inactive === 'true';
 
@@ -28,63 +29,6 @@ router.get('/', auth, async (req, res) => {
   res.json(rows);
 });
 
-async function copyBatchStructure(sourceBatchId, newBatchId, userId) {
-  const sourceYears = await sql`
-    SELECT * FROM academic_years WHERE batch_id = ${sourceBatchId} AND is_active = true ORDER BY year_order
-  `;
-  for (const srcYear of sourceYears) {
-    const [newYear] = await sql`
-      INSERT INTO academic_years (batch_id, name, year_order)
-      VALUES (${newBatchId}, ${srcYear.name}, ${srcYear.year_order})
-      RETURNING *
-    `;
-    const srcSemesters = await sql`
-      SELECT * FROM semesters WHERE academic_year_id = ${srcYear.id} AND is_active = true ORDER BY semester_order
-    `;
-    const semMap = {};
-    for (const s of srcSemesters) {
-      const [ns] = await sql`
-        INSERT INTO semesters (academic_year_id, name, semester_order)
-        VALUES (${newYear.id}, ${s.name}, ${s.semester_order})
-        RETURNING *
-      `;
-      semMap[s.id] = ns.id;
-    }
-    const srcAYS = await sql`
-      SELECT * FROM academic_year_subjects WHERE academic_year_id = ${srcYear.id}
-    `;
-    for (const ays of srcAYS) {
-      const newSemId = ays.semester_id ? (semMap[ays.semester_id] ?? null) : null;
-      const [newAYS] = await sql`
-        INSERT INTO academic_year_subjects (academic_year_id, subject_id, semester_id)
-        VALUES (${newYear.id}, ${ays.subject_id}, ${newSemId})
-        ON CONFLICT (academic_year_id, subject_id) DO NOTHING
-        RETURNING *
-      `;
-      if (!newAYS) continue;
-      const srcChapters = await sql`
-        SELECT * FROM chapters WHERE academic_year_subject_id = ${ays.id} AND is_active = true ORDER BY chapter_order
-      `;
-      for (const ch of srcChapters) {
-        const [newCh] = await sql`
-          INSERT INTO chapters (academic_year_subject_id, title, description, chapter_order, created_by)
-          VALUES (${newAYS.id}, ${ch.title}, ${ch.description ?? null}, ${ch.chapter_order}, ${userId})
-          RETURNING *
-        `;
-        const srcRes = await sql`
-          SELECT * FROM learning_resources WHERE chapter_id = ${ch.id} AND is_active = true ORDER BY type, title
-        `;
-        for (const r of srcRes) {
-          await sql`
-            INSERT INTO learning_resources (chapter_id, type, title, url, description, created_by)
-            VALUES (${newCh.id}, ${r.type}, ${r.title}, ${r.url ?? null}, ${r.description ?? null}, ${userId})
-          `;
-        }
-      }
-    }
-  }
-}
-
 async function placeNames(universityId, streamId) {
   const rows = await sql`
     SELECT
@@ -96,7 +40,7 @@ async function placeNames(universityId, streamId) {
 
 router.post('/', auth, async (req, res, next) => {
   try {
-    const { name, university_id, stream_id, copy_from_batch_id } = req.body;
+    const { name, university_id, stream_id } = req.body;
     if (!name || !university_id || !stream_id) return res.status(400).json({ error: 'Name, university, and stream are required.' });
     const rows = await sql`
       INSERT INTO batches (name, university_id, stream_id)
@@ -104,13 +48,10 @@ router.post('/', auth, async (req, res, next) => {
       RETURNING *
     `;
     const newBatch = rows[0];
-    if (copy_from_batch_id) {
-      await copyBatchStructure(copy_from_batch_id, newBatch.id, req.user.id);
-    }
     const place = await placeNames(university_id, stream_id);
     await logActivity(req.user.id, req.user.name, req.user.role, 'create_batch', 'batch', newBatch.id,
-      `Created batch: ${name} (${place.university_name || 'University N/A'} / ${place.stream_name || 'Stream N/A'})${copy_from_batch_id ? ` — copied structure from batch #${copy_from_batch_id}` : ''}`);
-    res.status(201).json({ ...newBatch, copied: !!copy_from_batch_id });
+      `Created batch: ${name} (${place.university_name || 'University N/A'} / ${place.stream_name || 'Stream N/A'})`);
+    res.status(201).json(newBatch);
   } catch (err) { next(err); }
 });
 

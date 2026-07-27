@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAuth } from '@/context/AuthContext';
-import client from '@/api/client';
+import { useDashboardSummary } from '@/api/queries';
+import { SkeletonStats, SkeletonTable } from '@/components/Skeletons';
 
 function StatCard({ label, value, highlight }) {
   return (
@@ -31,18 +31,18 @@ function timeAgo(dateStr) {
 
 export default function DashboardPage() {
   const { isAdmin } = useAuth();
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    client.get('/dashboard/summary')
-      .then((res) => setData(res.data))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  // React Query caches this in memory: returning to the Dashboard renders the last
+  // data instantly and refreshes in the background instead of blocking on a fetch.
+  const { data, isLoading: loading } = useDashboardSummary();
 
   if (loading) {
-    return <p className="text-sm text-slate-500 dark:text-slate-400">Loading dashboard...</p>;
+    return (
+      <div className="space-y-6">
+        <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Dashboard</h1>
+        <SkeletonStats count={4} />
+        <SkeletonTable rows={6} cols={5} />
+      </div>
+    );
   }
 
   return (
@@ -95,10 +95,10 @@ export default function DashboardPage() {
           <CardContent className="space-y-3">
             <p className="text-3xl font-bold text-slate-900 dark:text-slate-100">{data?.pending_uploads ?? 0}</p>
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              Classes that are recorded but not uploaded anywhere yet.
+              Chapters that are recorded but not uploaded to any destination yet.
             </p>
             <Button size="sm" asChild>
-              <Link to="/classes?is_recorded=true&upload_student_app=false">View Classes</Link>
+              <Link to="/recording-overview">Manage Recordings</Link>
             </Button>
           </CardContent>
         </Card>

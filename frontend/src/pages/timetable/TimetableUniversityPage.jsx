@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { toast } from 'sonner';
 import client from '@/api/client';
+import { SkeletonCards } from '@/components/Skeletons';
 
 export default function TimetableUniversityPage() {
   const { universityId } = useParams();
@@ -56,7 +57,7 @@ export default function TimetableUniversityPage() {
       </div>
 
       {loading ? (
-        <p className="text-sm text-slate-500 dark:text-slate-400">Loading...</p>
+        <SkeletonCards count={6} />
       ) : (
         <>
           {/* Streams */}

@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import StatusBadge from '@/components/StatusBadge';
 import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
+import { SkeletonTable } from '@/components/Skeletons';
 
 const emptyForm = { name: '', university_id: '' };
 const emptyFilters = { search: '', university_id: '', status: '' };
@@ -18,6 +19,7 @@ export default function StreamsPage() {
   const confirm = useConfirm();
   const [streams, setStreams] = useState([]);
   const [universities, setUniversities] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
@@ -33,6 +35,7 @@ export default function StreamsPage() {
   }), [streams, filters]);
 
   async function load() {
+    setLoading(true);
     try {
       const [streamsRes, uniRes] = await Promise.all([
         client.get('/streams?include_inactive=true'),
@@ -42,6 +45,8 @@ export default function StreamsPage() {
       setUniversities(uniRes.data);
     } catch {
       toast.error('Failed to load data.');
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -152,6 +157,7 @@ export default function StreamsPage() {
           <Button size="sm" onClick={openAdd}>Add New</Button>
         </CardHeader>
         <CardContent>
+          {loading ? <SkeletonTable rows={5} cols={4} /> : (
           <Table>
             <TableHeader>
               <TableRow>
@@ -186,6 +192,7 @@ export default function StreamsPage() {
               ))}
             </TableBody>
           </Table>
+          )}
         </CardContent>
       </Card>
 

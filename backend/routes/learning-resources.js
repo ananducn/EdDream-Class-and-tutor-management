@@ -30,8 +30,7 @@ async function resourcePlace(chapterId) {
   const rows = await sql`
     SELECT ch.title AS chapter_title, s.name AS subject_name
     FROM chapters ch
-    JOIN academic_year_subjects ays ON ays.id = ch.academic_year_subject_id
-    JOIN subjects s ON s.id = ays.subject_id
+    JOIN subjects s ON s.id = ch.subject_id
     WHERE ch.id = ${chapterId}
   `;
   return rows[0];

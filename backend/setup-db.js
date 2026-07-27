@@ -51,7 +51,7 @@ await sql`
     name TEXT NOT NULL,
     subject_code TEXT,
     university_id INTEGER REFERENCES universities(id),
-    stream_id INTEGER NOT NULL REFERENCES streams(id),
+    stream_id INTEGER REFERENCES streams(id),
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT NOW()
   )
@@ -94,6 +94,9 @@ await sql`
   )
 `;
 
+// Class sessions track scheduling / attendance / payment only. Recording moved
+// to a canonical, batch-independent chapter_recordings entity (see below), so
+// none of the recording/upload columns live here anymore.
 await sql`
   CREATE TABLE IF NOT EXISTS class_entries (
     id SERIAL PRIMARY KEY,
@@ -109,26 +112,9 @@ await sql`
     class_mode TEXT CHECK (class_mode IN ('online', 'offline')),
     platform_used TEXT,
     notes TEXT,
-    is_recorded BOOLEAN DEFAULT false,
-    recording_file_name TEXT,
-    recording_duration TEXT,
-    storage_location TEXT,
-    recording_link TEXT,
-    backup_available BOOLEAN DEFAULT false,
-    editing_status TEXT DEFAULT 'not_edited' CHECK (editing_status IN ('not_edited', 'edited')),
-    upload_student_app BOOLEAN DEFAULT false,
-    upload_student_app_date DATE,
-    upload_student_app_link TEXT,
-    upload_youtube BOOLEAN DEFAULT false,
-    upload_youtube_date DATE,
-    upload_youtube_link TEXT,
-    youtube_privacy TEXT CHECK (youtube_privacy IN ('public', 'unlisted', 'private')),
-    upload_gdrive BOOLEAN DEFAULT false,
-    upload_gdrive_link TEXT,
-    upload_harddisk BOOLEAN DEFAULT false,
-    upload_harddisk_location TEXT,
     payment_status TEXT DEFAULT 'pending' CHECK (payment_status IN ('paid', 'pending')),
     payment_remarks TEXT,
+    class_group_id INTEGER,
     created_by INTEGER REFERENCES users(id),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -156,6 +142,7 @@ await sql`
     faculty_id INTEGER REFERENCES faculty(id),
     subject_id INTEGER REFERENCES subjects(id),
     class_taken_status TEXT DEFAULT 'scheduled' CHECK (class_taken_status IN ('scheduled','taken','not_taken')),
+    slot_group_id INTEGER,
     notes TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -199,10 +186,13 @@ await sql`
   )
 `;
 
+// The syllabus (years → semesters → subjects → chapters) is defined once per
+// STREAM and shared by every batch of that stream, so academic years hang off
+// stream_id rather than a specific batch.
 await sql`
   CREATE TABLE IF NOT EXISTS academic_years (
     id SERIAL PRIMARY KEY,
-    batch_id INTEGER NOT NULL REFERENCES batches(id) ON DELETE CASCADE,
+    stream_id INTEGER NOT NULL REFERENCES streams(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     year_order INTEGER NOT NULL DEFAULT 1,
     is_active BOOLEAN NOT NULL DEFAULT true,
@@ -235,7 +225,7 @@ await sql`
 await sql`
   CREATE TABLE IF NOT EXISTS chapters (
     id SERIAL PRIMARY KEY,
-    academic_year_subject_id INTEGER NOT NULL REFERENCES academic_year_subjects(id) ON DELETE CASCADE,
+    subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
     description TEXT,
     chapter_order INTEGER NOT NULL DEFAULT 1,
@@ -255,6 +245,37 @@ await sql`
     url TEXT,
     description TEXT,
     is_active BOOLEAN NOT NULL DEFAULT true,
+    created_by INTEGER REFERENCES users(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+  )
+`;
+
+// Canonical recording for a chapter, shared across every batch of the stream.
+// One row per chapter (UNIQUE); a recording may live in several destinations at
+// once (YouTube / Drive / Student App / local), mirroring the upload_* pattern.
+await sql`
+  CREATE TABLE IF NOT EXISTS chapter_recordings (
+    id SERIAL PRIMARY KEY,
+    chapter_id INTEGER NOT NULL UNIQUE REFERENCES chapters(id) ON DELETE CASCADE,
+    is_recorded BOOLEAN NOT NULL DEFAULT false,
+    faculty_id INTEGER REFERENCES faculty(id),
+    recording_date DATE,
+    recording_file_name TEXT,
+    recording_duration TEXT,
+    notes TEXT,
+    editing_status TEXT DEFAULT 'not_edited' CHECK (editing_status IN ('not_edited', 'edited')),
+    backup_available BOOLEAN DEFAULT false,
+    storage_location TEXT,
+    upload_youtube BOOLEAN DEFAULT false,
+    upload_youtube_link TEXT,
+    youtube_privacy TEXT CHECK (youtube_privacy IN ('public', 'unlisted', 'private')),
+    upload_gdrive BOOLEAN DEFAULT false,
+    upload_gdrive_link TEXT,
+    upload_student_app BOOLEAN DEFAULT false,
+    upload_student_app_link TEXT,
+    upload_harddisk BOOLEAN DEFAULT false,
+    upload_harddisk_location TEXT,
     created_by INTEGER REFERENCES users(id),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
