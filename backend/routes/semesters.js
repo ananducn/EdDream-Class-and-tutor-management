@@ -1,11 +1,12 @@
 import express from 'express';
 import { sql } from '../db.js';
 import { auth } from '../middleware/auth.js';
+import { cacheRoute } from '../middleware/cache.js';
 import { logActivity } from '../middleware/logger.js';
 
 const router = express.Router();
 
-router.get('/', auth, async (req, res, next) => {
+router.get('/', auth, cacheRoute(60000), async (req, res, next) => {
   try {
     const { academic_year_id, include_inactive } = req.query;
     if (!academic_year_id) return res.status(400).json({ error: 'academic_year_id is required.' });

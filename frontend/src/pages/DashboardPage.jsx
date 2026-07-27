@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useAuth } from '@/context/AuthContext';
-import client from '@/api/client';
+import { useDashboardSummary } from '@/api/queries';
+import { SkeletonStats, SkeletonTable } from '@/components/Skeletons';
 
 function StatCard({ label, value, highlight }) {
   return (
@@ -31,18 +31,18 @@ function timeAgo(dateStr) {
 
 export default function DashboardPage() {
   const { isAdmin } = useAuth();
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    client.get('/dashboard/summary')
-      .then((res) => setData(res.data))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  // React Query caches this in memory: returning to the Dashboard renders the last
+  // data instantly and refreshes in the background instead of blocking on a fetch.
+  const { data, isLoading: loading } = useDashboardSummary();
 
   if (loading) {
-    return <p className="text-sm text-slate-500 dark:text-slate-400">Loading dashboard...</p>;
+    return (
+      <div className="space-y-6">
+        <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Dashboard</h1>
+        <SkeletonStats count={4} />
+        <SkeletonTable rows={6} cols={5} />
+      </div>
+    );
   }
 
   return (

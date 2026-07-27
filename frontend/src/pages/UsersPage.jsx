@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import StatusBadge from '@/components/StatusBadge';
 import client from '@/api/client';
+import { SkeletonTable } from '@/components/Skeletons';
 
 const EMPTY_INVITE = { name: '', email: '', role: 'staff' };
 const EMPTY_EDIT = { name: '', email: '', role: 'staff' };
@@ -143,7 +144,7 @@ export default function UsersPage() {
         </CardHeader>
         <CardContent>
           {loading ? (
-            <p className="text-sm text-slate-500 dark:text-slate-400">Loading…</p>
+            <SkeletonTable rows={5} cols={4} />
           ) : !users.length ? (
             <p className="text-sm text-slate-500 dark:text-slate-400">No users found.</p>
           ) : (

@@ -11,6 +11,7 @@ import { Separator } from '@/components/ui/separator';
 import StatusBadge from '@/components/StatusBadge';
 import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
+import { SkeletonTable } from '@/components/Skeletons';
 
 const emptyForm = { name: '', subject_code: '', university_id: '', stream_id: '' };
 const emptyAssignment = { academic_year_id: '', semester_id: '' };
@@ -20,6 +21,7 @@ export default function SubjectsPage() {
   const confirm = useConfirm();
   const [subjects, setSubjects] = useState([]);
   const [universities, setUniversities] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [streams, setStreams] = useState([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -45,6 +47,7 @@ export default function SubjectsPage() {
   }), [subjects, filters.search, filters.status]);
 
   async function load(f = filters) {
+    setLoading(true);
     try {
       const q = new URLSearchParams({ include_inactive: 'true' });
       if (f.university_id)    q.set('university_id', f.university_id);
@@ -62,6 +65,8 @@ export default function SubjectsPage() {
       setUniversities(uniRes.data);
     } catch {
       toast.error('Failed to load data.');
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -395,6 +400,7 @@ export default function SubjectsPage() {
           <Button size="sm" onClick={openAdd}>Add New</Button>
         </CardHeader>
         <CardContent>
+          {loading ? <SkeletonTable rows={5} cols={6} /> : (
           <Table>
             <TableHeader>
               <TableRow>
@@ -432,6 +438,7 @@ export default function SubjectsPage() {
               ))}
             </TableBody>
           </Table>
+          )}
         </CardContent>
       </Card>
 

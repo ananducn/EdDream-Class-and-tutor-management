@@ -8,10 +8,12 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
+import { SkeletonTable } from '@/components/Skeletons';
 
 const RESOURCE_TYPES = [
   { value: 'notes',           label: 'Notes' },
@@ -67,6 +69,9 @@ export default function CurriculumPage() {
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState(false);
   const [availableSubjects, setAvailableSubjects] = useState([]);
+  // When ticked, the assign-subject picker offers common subjects from sibling
+  // streams (same university), so one subject can be shared across streams.
+  const [commonSubject, setCommonSubject] = useState(false);
 
   // "Create new subject" dialog — used at the subject levels to create + auto-assign
   const [createSubjectOpen, setCreateSubjectOpen] = useState(false);
@@ -151,6 +156,26 @@ export default function CurriculumPage() {
 
   // ── Dialog helpers ─────────────────────────────────────────────────────────
 
+  // Available subjects for the assign-subject picker. common=false scopes to this
+  // stream's own subjects; common=true broadens to every subject in the university
+  // (across its streams) so an existing subject can be linked as a common subject.
+  async function loadAvailableSubjects(common) {
+    try {
+      const q = common
+        ? `/subjects?university_id=${uni}&common=true`
+        : `/subjects?university_id=${uni}&stream_id=${stream}`;
+      const res = await client.get(q);
+      const already = new Set(items.map((i) => String(i.subject_id)));
+      setAvailableSubjects(res.data.filter((s) => !already.has(String(s.id))));
+    } catch { toast.error('Failed to load subjects.'); }
+  }
+
+  async function handleCommonToggle(v) {
+    setCommonSubject(v);
+    setForm((f) => ({ ...f, subject_id: '' }));
+    await loadAvailableSubjects(v);
+  }
+
   async function openAdd() {
     setEditing(null);
     if (level === 0) {
@@ -163,11 +188,8 @@ export default function CurriculumPage() {
       setForm({ name: '', semester_order: String(items.length + 1) });
     } else if (level === 3 || level === 4) {
       setForm({ subject_id: '' });
-      try {
-        const res = await client.get(`/subjects?university_id=${uni}&stream_id=${stream}`);
-        const already = new Set(items.map((i) => String(i.subject_id)));
-        setAvailableSubjects(res.data.filter((s) => !already.has(String(s.id))));
-      } catch { toast.error('Failed to load subjects.'); }
+      setCommonSubject(false);
+      await loadAvailableSubjects(false);
     } else if (level === 5) {
       setForm({ title: '', description: '', chapter_order: String(items.filter((i) => i.is_active).length + 1) });
     } else if (level === 6) {
@@ -531,18 +553,31 @@ export default function CurriculumPage() {
     );
 
     if (level === 3 || level === 4) return (
-      <div className="space-y-1">
-        <Label>Subject *</Label>
-        <Select value={form.subject_id || ''} onValueChange={(v) => setForm({ ...form, subject_id: v })}>
-          <SelectTrigger className="w-full"><SelectValue placeholder="Select a subject" /></SelectTrigger>
-          <SelectContent>
-            {availableSubjects.length === 0
-              ? <SelectItem value="__none" disabled>No more subjects available</SelectItem>
-              : availableSubjects.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}{s.subject_code ? ` (${s.subject_code})` : ''}</SelectItem>)
-            }
-          </SelectContent>
-        </Select>
-        <p className="text-xs text-slate-400 mt-1">Only subjects for this stream that aren't already in this year are shown.</p>
+      <div className="space-y-3">
+        <div className="flex items-center justify-between rounded-md border border-slate-200 dark:border-slate-700 px-3 py-2">
+          <div>
+            <Label className="mb-0">Common subject</Label>
+            <p className="text-xs text-slate-400">Share a subject (and its chapters + recordings) with other streams in this university.</p>
+          </div>
+          <Switch checked={commonSubject} onCheckedChange={handleCommonToggle} />
+        </div>
+        <div className="space-y-1">
+          <Label>Subject *</Label>
+          <Select value={form.subject_id || ''} onValueChange={(v) => setForm({ ...form, subject_id: v })}>
+            <SelectTrigger className="w-full"><SelectValue placeholder="Select a subject" /></SelectTrigger>
+            <SelectContent>
+              {availableSubjects.length === 0
+                ? <SelectItem value="__none" disabled>No more subjects available</SelectItem>
+                : availableSubjects.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}{s.subject_code ? ` (${s.subject_code})` : ''}</SelectItem>)
+              }
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-slate-400 mt-1">
+            {commonSubject
+              ? 'Showing every subject in this university not already in this year. Picking one links it here as a common subject.'
+              : "Only subjects for this stream that aren't already in this year are shown."}
+          </p>
+        </div>
       </div>
     );
 
@@ -642,7 +677,7 @@ export default function CurriculumPage() {
         </CardHeader>
         <CardContent>
           {loading ? (
-            <p className="text-sm text-slate-500 py-6 text-center">Loading...</p>
+            <SkeletonTable rows={5} cols={4} />
           ) : items.length === 0 ? (
             <p className="text-sm text-slate-500 py-6 text-center">Nothing found here.</p>
           ) : (

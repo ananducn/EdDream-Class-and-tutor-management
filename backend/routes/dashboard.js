@@ -1,10 +1,11 @@
 import express from 'express';
 import { sql } from '../db.js';
 import { auth } from '../middleware/auth.js';
+import { cacheRoute } from '../middleware/cache.js';
 
 const router = express.Router();
 
-router.get('/summary', auth, async (req, res, next) => {
+router.get('/summary', auth, cacheRoute(30000), async (req, res, next) => {
   try {
     const [
       totalRows,
@@ -43,13 +44,22 @@ router.get('/summary', auth, async (req, res, next) => {
           AND COALESCE(r.upload_gdrive, false) = false
           AND COALESCE(r.upload_harddisk, false) = false`,
 
-      sql`SELECT f.name AS faculty_name, COALESCE(SUM(ce.total_hours), 0) AS total_hours
+      // A common-subject class is one teaching session split across several
+      // batches (one row per batch, same faculty + hours). Faculty taught it once,
+      // so collapse each group to a single row before summing hours — otherwise a
+      // class shared by N batches would count as N× the hours.
+      sql`SELECT f.name AS faculty_name, COALESCE(SUM(g.total_hours), 0) AS total_hours
           FROM faculty f
-          LEFT JOIN class_entries ce ON ce.faculty_id = f.id
-            AND DATE_TRUNC('month', ce.date) = DATE_TRUNC('month', CURRENT_DATE)
+          LEFT JOIN (
+            SELECT DISTINCT ON (COALESCE(ce.class_group_id, ce.id))
+                   ce.faculty_id, ce.total_hours
+            FROM class_entries ce
+            WHERE DATE_TRUNC('month', ce.date) = DATE_TRUNC('month', CURRENT_DATE)
+            ORDER BY COALESCE(ce.class_group_id, ce.id), ce.id
+          ) g ON g.faculty_id = f.id
           WHERE f.is_active = true
           GROUP BY f.id, f.name
-          HAVING COALESCE(SUM(ce.total_hours), 0) > 0
+          HAVING COALESCE(SUM(g.total_hours), 0) > 0
           ORDER BY total_hours DESC`,
 
       req.user.role === 'admin'

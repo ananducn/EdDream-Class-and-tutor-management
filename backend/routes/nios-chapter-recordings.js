@@ -23,9 +23,16 @@ const BOOL_FIELDS = new Set([
 // Chapters in a university-subject, each with its recording folded in.
 router.get('/', auth, async (req, res, next) => {
   try {
-    const { nios_university_subject_id } = req.query;
-    if (!nios_university_subject_id) {
-      return res.status(400).json({ error: 'nios_university_subject_id is required.' });
+    const { nios_university_subject_id, nios_subject_id } = req.query;
+    // Chapters + recordings now root on the subject (shared across universities).
+    // Still accept a placement id and resolve it to the subject.
+    let subjectId = nios_subject_id ? Number(nios_subject_id) : null;
+    if (!subjectId && nios_university_subject_id) {
+      const p = await sql`SELECT nios_subject_id FROM nios_university_subjects WHERE id = ${nios_university_subject_id}`;
+      subjectId = p[0]?.nios_subject_id ?? null;
+    }
+    if (!subjectId) {
+      return res.status(400).json({ error: 'nios_subject_id or nios_university_subject_id is required.' });
     }
     const rows = await sql`
       SELECT ch.id AS nios_chapter_id, ch.title AS chapter_title, ch.chapter_order,
@@ -39,7 +46,7 @@ router.get('/', auth, async (req, res, next) => {
       FROM nios_chapters ch
       LEFT JOIN nios_chapter_recordings r ON r.nios_chapter_id = ch.id
       LEFT JOIN faculty f ON f.id = r.faculty_id
-      WHERE ch.nios_university_subject_id = ${nios_university_subject_id} AND ch.is_active = true
+      WHERE ch.nios_subject_id = ${subjectId} AND ch.is_active = true
       ORDER BY ch.chapter_order, ch.title
     `;
     res.json(rows);
@@ -67,7 +74,7 @@ router.get('/overview', auth, async (req, res, next) => {
         ))                                                                       AS recorded_not_uploaded
       FROM nios_university_subjects us
       JOIN  nios_subjects sub ON sub.id = us.nios_subject_id
-      LEFT JOIN nios_chapters ch ON ch.nios_university_subject_id = us.id AND ch.is_active = true
+      LEFT JOIN nios_chapters ch ON ch.nios_subject_id = us.nios_subject_id AND ch.is_active = true
       LEFT JOIN nios_chapter_recordings r ON r.nios_chapter_id = ch.id
       WHERE us.nios_university_id = ${nios_university_id}
       ORDER BY sub.name, ch.chapter_order NULLS LAST

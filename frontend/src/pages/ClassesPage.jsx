@@ -9,7 +9,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
 import StatusBadge from '@/components/StatusBadge';
+import { SkeletonTable } from '@/components/Skeletons';
 import { useAuth } from '@/context/AuthContext';
 import client from '@/api/client';
 
@@ -25,6 +27,17 @@ const emptyFilters = {
   date_from: '', date_to: '', faculty_id: '', subject_id: '', university_id: '',
   batch_id: '', class_mode: '', class_status: '',
 };
+
+// Format a "HH:MM[:SS]" time string as 12-hour, e.g. "15:05" -> "03:05 PM".
+function to12h(t) {
+  if (!t) return t;
+  const [h, m] = String(t).split(':');
+  const hr = parseInt(h, 10);
+  if (Number.isNaN(hr)) return t;
+  const ampm = hr >= 12 ? 'PM' : 'AM';
+  const h12 = hr % 12 || 12;
+  return `${String(h12).padStart(2, '0')}:${m} ${ampm}`;
+}
 
 function calcHours(start, end) {
   if (!start || !end) return '';
@@ -58,8 +71,14 @@ export default function ClassesPage() {
   const [deleting, setDeleting] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
+  // Common-subject fan-out: schedule one class across many batches from the
+  // streams the (shared) subject is linked to. commonStreams holds those streams;
+  // selectedBatchIds is the multi-batch selection.
+  const [commonSubject, setCommonSubject] = useState(false);
+  const [commonStreams, setCommonStreams] = useState([]);
+  const [selectedBatchIds, setSelectedBatchIds] = useState([]);
   const [saving, setSaving] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   async function loadDropdowns() {
     const [fRes, sRes, uRes, bRes, stRes] = await Promise.all([
@@ -154,15 +173,52 @@ export default function ClassesPage() {
   async function handleFormSubjectChange(subjectId) {
     setForm((f) => ({ ...f, subject_id: subjectId, chapter_id: '' }));
     setFormChapters([]);
-    if (!subjectId) return;
+    if (!subjectId) { setCommonStreams([]); setSelectedBatchIds([]); return;  }
     const ays = formAcademicYearSubjects.find((s) => String(s.subject_id) === subjectId);
     if (ays) {
       try { const res = await client.get(`/chapters?academic_year_subject_id=${ays.id}`); setFormChapters(res.data); } catch { /**/ }
     }
+    // For a common-subject fan-out, discover every stream (same university) the
+    // subject is linked to so we can offer their batches.
+    if (commonSubject) {
+      setSelectedBatchIds([]);
+      await loadCommonStreams(subjectId);
+    }
+  }
+
+  // Streams (same university) the given subject is linked to, for the fan-out.
+  async function loadCommonStreams(subjectId) {
+    if (!subjectId) { setCommonStreams([]); return; }
+    try {
+      const res = await client.get(`/academic-year-subjects?subject_id=${subjectId}`);
+      const seen = new Set();
+      const streamsForSubject = [];
+      for (const p of res.data) {
+        if (String(p.university_id) !== String(form.university_id)) continue;
+        if (seen.has(String(p.stream_id))) continue;
+        seen.add(String(p.stream_id));
+        streamsForSubject.push({ stream_id: p.stream_id, stream_name: p.stream_name });
+      }
+      setCommonStreams(streamsForSubject);
+    } catch { /**/ }
   }
 
   function handleFormChapterChange(v) {
     setForm((f) => ({ ...f, chapter_id: v }));
+  }
+
+  async function handleCommonToggle(v) {
+    setCommonSubject(v);
+    setCommonStreams([]);
+    setSelectedBatchIds([]);
+    setForm((f) => ({ ...f, batch_id: '' }));
+    // If a subject is already chosen, populate its linked streams right away.
+    if (v && form.subject_id) await loadCommonStreams(form.subject_id);
+  }
+
+  function toggleBatchSelection(id) {
+    const s = String(id);
+    setSelectedBatchIds((prev) => prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]);
   }
 
   function handleTimeChange(field, value) {
@@ -177,6 +233,7 @@ export default function ClassesPage() {
   function openAdd() {
     setEditing(null);
     setForm(emptyForm);
+    setCommonSubject(false); setCommonStreams([]); setSelectedBatchIds([]);
     setFormStreams(streams);
     setFormBatches(batches);
     setFormAcademicYears([]); setFormSemesters([]); setFormAcademicYearSubjects([]); setFormChapters([]);
@@ -185,6 +242,8 @@ export default function ClassesPage() {
 
   async function openEdit(c) {
     setEditing(c);
+    // Editing applies to the shared fields; batch composition isn't re-picked here.
+    setCommonSubject(false); setCommonStreams([]); setSelectedBatchIds([]);
     setForm({
       date: c.date?.slice(0, 10) || '',
       start_time: c.start_time || '',
@@ -257,11 +316,12 @@ export default function ClassesPage() {
 
     // Native `required` covers the <input> fields; the Radix <Select>s need a
     // manual check since they don't participate in HTML form validation.
+    const isFanOut = commonSubject && !editing;
     const requiredSelects = [
       ['faculty_id', 'Faculty'],
       ['university_id', 'University'],
       ['stream_id', 'Stream'],
-      ['batch_id', 'Batch'],
+      ...(isFanOut ? [] : [['batch_id', 'Batch']]),
       ['academic_year_id', 'Academic Year'],
       ['subject_id', 'Subject'],
       ['chapter_id', 'Chapter'],
@@ -269,6 +329,7 @@ export default function ClassesPage() {
     ];
     const missing = requiredSelects.filter(([key]) => !form[key]).map(([, label]) => label);
     if (formSemesters.length > 0 && !form.semester_id) missing.push('Semester');
+    if (isFanOut && selectedBatchIds.length === 0) missing.push('at least one Batch');
     if (missing.length) {
       toast.error(`Please select: ${missing.join(', ')}.`);
       return;
@@ -280,6 +341,11 @@ export default function ClassesPage() {
       if (editing) {
         await client.put(`/classes/${editing.id}`, payload);
         toast.success('Class updated.');
+      } else if (isFanOut) {
+        // Fan out one common-subject class across the selected batches. The backend
+        // resolves each batch's own stream and groups the rows into one class.
+        await client.post('/classes', { ...payload, batch_id: '', batch_ids: selectedBatchIds });
+        toast.success(`Class added for ${selectedBatchIds.length} batch${selectedBatchIds.length > 1 ? 'es' : ''}.`);
       } else {
         await client.post('/classes', payload);
         toast.success('Class added.');
@@ -310,6 +376,17 @@ export default function ClassesPage() {
   }
 
   const TH = 'text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400';
+
+  // Collapse fanned-out (common-subject) classes into a single representative row.
+  const groupSize = {};
+  for (const c of classes) if (c.class_group_id) groupSize[c.class_group_id] = (groupSize[c.class_group_id] || 0) + 1;
+  const seenGroups = new Set();
+  const displayClasses = classes.filter((c) => {
+    if (!c.class_group_id) return true;
+    if (seenGroups.has(c.class_group_id)) return false;
+    seenGroups.add(c.class_group_id);
+    return true;
+  });
 
   return (
     <div className="space-y-4">
@@ -399,6 +476,7 @@ export default function ClassesPage() {
           <Button size="sm" onClick={openAdd}>Add Class</Button>
         </CardHeader>
         <CardContent>
+          {loading ? <SkeletonTable rows={6} cols={9} /> : (
           <Table>
             <TableHeader>
               <TableRow>
@@ -419,7 +497,7 @@ export default function ClassesPage() {
                   <TableCell colSpan={10} className="text-center text-sm text-slate-500 dark:text-slate-400 py-8">No classes found.</TableCell>
                 </TableRow>
               )}
-              {classes.map((c) => (
+              {displayClasses.map((c) => (
                 <TableRow
                   key={c.id}
                   className={c.class_status === 'taken' ? 'bg-green-100 hover:bg-green-200/70 dark:bg-green-900/30 dark:hover:bg-green-900/40' : ''}
@@ -428,7 +506,11 @@ export default function ClassesPage() {
                   <TableCell>{c.faculty_name || '—'}</TableCell>
                   <TableCell>{c.subject_name || '—'}</TableCell>
                   <TableCell>{c.university_name || '—'}</TableCell>
-                  <TableCell>{c.batch_name || '—'}</TableCell>
+                  <TableCell>
+                    {c.class_group_id
+                      ? <span title="Common-subject class across multiple batches">{c.batch_name || '—'} <span className="text-xs text-slate-400">+{(groupSize[c.class_group_id] || 1) - 1} more</span></span>
+                      : (c.batch_name || '—')}
+                  </TableCell>
                   <TableCell>{c.total_hours || '—'}</TableCell>
                   <TableCell>
                     {c.class_mode ? <StatusBadge status={c.class_mode} /> : '—'}
@@ -461,6 +543,7 @@ export default function ClassesPage() {
               ))}
             </TableBody>
           </Table>
+          )}
         </CardContent>
       </Card>
 
@@ -468,31 +551,73 @@ export default function ClassesPage() {
       <Dialog open={!!viewDialog} onOpenChange={() => setViewDialog(null)}>
         <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Class Details</DialogTitle></DialogHeader>
-          {viewDialog && (
-            <div className="space-y-2 text-sm">
-              {[
-                ['Date', viewDialog.date?.slice(0, 10)],
-                ['Faculty', viewDialog.faculty_name],
-                ['Subject', viewDialog.subject_name],
-                ['University', viewDialog.university_name],
+          {viewDialog && (() => {
+            // For a common-subject (grouped) class, the per-batch stream/year/semester
+            // vary, so list them in a table instead of single lines.
+            const groupRows = viewDialog.class_group_id
+              ? classes.filter((c) => String(c.class_group_id) === String(viewDialog.class_group_id))
+              : null;
+            const shared = [
+              ['Date', viewDialog.date?.slice(0, 10)],
+              ['Faculty', viewDialog.faculty_name],
+              ['Subject', viewDialog.subject_name],
+              ['University', viewDialog.university_name],
+              ...(groupRows ? [] : [
                 ['Stream', viewDialog.stream_name],
                 ['Batch', viewDialog.batch_name],
-                ['Status', viewDialog.class_status],
-                ['Start Time', viewDialog.start_time],
-                ['End Time', viewDialog.end_time],
-                ['Total Hours', viewDialog.total_hours],
-                ['Mode', viewDialog.class_mode],
-                ['Platform', viewDialog.platform_used],
-                ['Unit/Chapter', viewDialog.unit_chapter],
-                ['Notes', viewDialog.notes],
-              ].map(([label, val]) => val !== null && val !== undefined && val !== '' && (
-                <div key={label} className="flex gap-2">
-                  <span className="font-medium text-slate-700 dark:text-slate-300 w-32 shrink-0">{label}:</span>
-                  <span className="text-slate-500 dark:text-slate-400">{String(val)}</span>
+                ['Academic Year', viewDialog.academic_year_name],
+                ['Semester', viewDialog.semester_name],
+              ]),
+              ['Status', viewDialog.class_status],
+              ['Start Time', to12h(viewDialog.start_time)],
+              ['End Time', to12h(viewDialog.end_time)],
+              ['Total Hours', viewDialog.total_hours],
+              ['Mode', viewDialog.class_mode],
+              ['Platform', viewDialog.platform_used],
+              ['Unit/Chapter', viewDialog.unit_chapter],
+              ['Notes', viewDialog.notes],
+            ];
+            return (
+              <div className="space-y-3 text-sm">
+                <div className="space-y-2">
+                  {shared.map(([label, val]) => val !== null && val !== undefined && val !== '' && (
+                    <div key={label} className="flex gap-2">
+                      <span className="font-medium text-slate-700 dark:text-slate-300 w-32 shrink-0">{label}:</span>
+                      <span className="text-slate-500 dark:text-slate-400">{String(val)}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          )}
+
+                {groupRows && (
+                  <div className="space-y-1">
+                    <p className="font-medium text-slate-700 dark:text-slate-300">Scheduled for {groupRows.length} batch{groupRows.length > 1 ? 'es' : ''}:</p>
+                    <div className="rounded-md border border-slate-200 dark:border-slate-700 overflow-hidden">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead className="text-xs">Stream</TableHead>
+                            <TableHead className="text-xs">Batch</TableHead>
+                            <TableHead className="text-xs">Year</TableHead>
+                            <TableHead className="text-xs">Semester</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {groupRows.map((r) => (
+                            <TableRow key={r.id}>
+                              <TableCell className="text-xs">{r.stream_name || '—'}</TableCell>
+                              <TableCell className="text-xs">{r.batch_name || '—'}</TableCell>
+                              <TableCell className="text-xs">{r.academic_year_name || '—'}</TableCell>
+                              <TableCell className="text-xs">{r.semester_name || '—'}</TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </DialogContent>
       </Dialog>
 
@@ -529,6 +654,15 @@ export default function ClassesPage() {
             <div className="space-y-3">
               <p className="text-sm font-medium text-slate-900 dark:text-slate-100">Class Details</p>
               <div className="grid grid-cols-2 gap-3">
+                {!editing && (
+                  <div className="col-span-2 flex items-center justify-between rounded-md border border-slate-200 dark:border-slate-700 px-3 py-2">
+                    <div>
+                      <Label className="mb-0">Common subject</Label>
+                      <p className="text-xs text-slate-400">Schedule this class for multiple batches across the streams sharing this subject.</p>
+                    </div>
+                    <Switch checked={commonSubject} onCheckedChange={handleCommonToggle} />
+                  </div>
+                )}
                 <div className="space-y-1 col-span-2 sm:col-span-1">
                   <Label>Date *</Label>
                   <Input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} required />
@@ -566,13 +700,15 @@ export default function ClassesPage() {
                     <SelectContent>{formStreams.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-1">
-                  <Label>Batch *</Label>
-                  <Select value={form.batch_id} onValueChange={handleFormBatchChange} disabled={!form.stream_id}>
-                    <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
-                    <SelectContent>{formBatches.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.name}</SelectItem>)}</SelectContent>
-                  </Select>
-                </div>
+                {!(commonSubject && !editing) && (
+                  <div className="space-y-1">
+                    <Label>Batch *</Label>
+                    <Select value={form.batch_id} onValueChange={handleFormBatchChange} disabled={!form.stream_id}>
+                      <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
+                      <SelectContent>{formBatches.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.name}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                )}
                 <div className="space-y-1">
                   <Label>Academic Year *</Label>
                   <Select value={form.academic_year_id} onValueChange={handleFormYearChange} disabled={!form.stream_id}>
@@ -603,6 +739,41 @@ export default function ClassesPage() {
                     <SelectContent>{formChapters.map((ch) => <SelectItem key={ch.id} value={String(ch.id)}>{ch.title}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
+                {commonSubject && !editing && (
+                  <div className="space-y-2 col-span-2">
+                    <Label>Batches * <span className="text-xs font-normal text-slate-400">({selectedBatchIds.length} selected)</span></Label>
+                    {!form.subject_id ? (
+                      <p className="text-xs text-slate-400">Pick a subject to see the batches of every stream that shares it.</p>
+                    ) : commonStreams.length === 0 ? (
+                      <p className="text-xs text-slate-400">This subject isn't linked to any stream in this university yet.</p>
+                    ) : (
+                      <div className="space-y-3 rounded-md border border-slate-200 dark:border-slate-700 p-3 max-h-56 overflow-y-auto">
+                        {commonStreams.map((st) => {
+                          const streamBatches = batches.filter((b) => String(b.stream_id) === String(st.stream_id));
+                          return (
+                            <div key={st.stream_id} className="space-y-1">
+                              <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">{st.stream_name}</p>
+                              {streamBatches.length === 0
+                                ? <p className="text-xs text-slate-400 pl-1">No batches in this stream.</p>
+                                : streamBatches.map((b) => (
+                                    <label key={b.id} className="flex items-center gap-2 text-sm cursor-pointer pl-1">
+                                      <input
+                                        type="checkbox"
+                                        className="h-4 w-4"
+                                        checked={selectedBatchIds.includes(String(b.id))}
+                                        onChange={() => toggleBatchSelection(b.id)}
+                                      />
+                                      {b.name}
+                                    </label>
+                                  ))
+                              }
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="space-y-1">
                   <Label>Class Status</Label>
                   <Select value={form.class_status} onValueChange={(v) => setForm({ ...form, class_status: v })}>

@@ -19,14 +19,20 @@ router.get('/faculty', auth, async (req, res, next) => {
     if (!dates) return;
     const { date_from, date_to } = dates;
 
+    // Collapse common-subject classes (one session, one row per batch) to a single
+    // row so a class shared by N batches counts as one class / its hours once.
     const rows = await sql`
       SELECT
         COALESCE(f.name, 'Unassigned') AS faculty_name,
-        COUNT(c.id)::int AS total_classes,
-        COALESCE(SUM(c.total_hours), 0)::numeric(10,2) AS total_hours
-      FROM class_entries c
-      LEFT JOIN faculty f ON f.id = c.faculty_id
-      WHERE c.date BETWEEN ${date_from} AND ${date_to}
+        COUNT(*)::int AS total_classes,
+        COALESCE(SUM(g.total_hours), 0)::numeric(10,2) AS total_hours
+      FROM (
+        SELECT DISTINCT ON (COALESCE(class_group_id, id)) id, faculty_id, total_hours
+        FROM class_entries
+        WHERE date BETWEEN ${date_from} AND ${date_to}
+        ORDER BY COALESCE(class_group_id, id), id
+      ) g
+      LEFT JOIN faculty f ON f.id = g.faculty_id
       GROUP BY f.id, f.name
       ORDER BY total_hours DESC
     `;
@@ -68,8 +74,7 @@ router.get('/uploads', auth, async (req, res, next) => {
         r.upload_student_app, r.upload_youtube, r.upload_gdrive, r.upload_harddisk
       FROM chapter_recordings r
       JOIN chapters ch ON ch.id = r.chapter_id
-      JOIN academic_year_subjects ays ON ays.id = ch.academic_year_subject_id
-      LEFT JOIN subjects sub ON sub.id = ays.subject_id
+      LEFT JOIN subjects sub ON sub.id = ch.subject_id
       LEFT JOIN faculty f ON f.id = r.faculty_id
       WHERE r.is_recorded = true
       ORDER BY sub.name, ch.chapter_order
@@ -178,13 +183,19 @@ router.get('/export', auth, async (req, res, next) => {
     let rows = [];
 
     if (type === 'faculty') {
+      // Count a common-subject class (one session, many batch rows) once.
       rows = await sql`
         SELECT
           COALESCE(f.name, 'Unassigned') AS faculty_name,
-          COUNT(c.id)::int AS total_classes,
-          COALESCE(SUM(c.total_hours), 0)::numeric(10,2) AS total_hours
-        FROM class_entries c LEFT JOIN faculty f ON f.id = c.faculty_id
-        WHERE c.date BETWEEN ${date_from} AND ${date_to}
+          COUNT(*)::int AS total_classes,
+          COALESCE(SUM(g.total_hours), 0)::numeric(10,2) AS total_hours
+        FROM (
+          SELECT DISTINCT ON (COALESCE(class_group_id, id)) id, faculty_id, total_hours
+          FROM class_entries
+          WHERE date BETWEEN ${date_from} AND ${date_to}
+          ORDER BY COALESCE(class_group_id, id), id
+        ) g
+        LEFT JOIN faculty f ON f.id = g.faculty_id
         GROUP BY f.id, f.name ORDER BY total_hours DESC
       `;
     } else if (type === 'recordings') {
@@ -203,8 +214,7 @@ router.get('/export', auth, async (req, res, next) => {
           r.upload_student_app, r.upload_youtube, r.upload_gdrive, r.upload_harddisk
         FROM chapter_recordings r
         JOIN chapters ch ON ch.id = r.chapter_id
-        JOIN academic_year_subjects ays ON ays.id = ch.academic_year_subject_id
-        LEFT JOIN subjects sub ON sub.id = ays.subject_id
+        LEFT JOIN subjects sub ON sub.id = ch.subject_id
         LEFT JOIN faculty f ON f.id = r.faculty_id
         WHERE r.is_recorded = true
         ORDER BY sub.name, ch.chapter_order

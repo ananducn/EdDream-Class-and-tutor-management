@@ -38,8 +38,7 @@ async function niosResourcePlace(niosChapterId) {
   const rows = await sql`
     SELECT ch.title AS chapter_title, s.name AS subject_name
     FROM nios_chapters ch
-    JOIN nios_university_subjects us ON us.id = ch.nios_university_subject_id
-    JOIN nios_subjects s ON s.id = us.nios_subject_id
+    JOIN nios_subjects s ON s.id = ch.nios_subject_id
     WHERE ch.id = ${niosChapterId}
   `;
   return rows[0];

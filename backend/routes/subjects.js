@@ -1,12 +1,13 @@
 import express from 'express';
 import { sql } from '../db.js';
 import { auth } from '../middleware/auth.js';
+import { cacheRoute } from '../middleware/cache.js';
 import { logActivity } from '../middleware/logger.js';
 
 const router = express.Router();
 
-router.get('/', auth, async (req, res) => {
-  const { university_id, stream_id, batch_id, academic_year_id, semester_id, assigned, include_inactive } = req.query;
+router.get('/', auth, cacheRoute(60000), async (req, res) => {
+  const { university_id, stream_id, batch_id, academic_year_id, semester_id, assigned, include_inactive, common } = req.query;
   const all = include_inactive === 'true';
 
   const conditions = [];
@@ -15,7 +16,10 @@ router.get('/', auth, async (req, res) => {
 
   if (!all) conditions.push('sub.is_active = true');
   if (university_id) { conditions.push(`sub.university_id = $${i++}`); params.push(university_id); }
-  if (stream_id)     { conditions.push(`sub.stream_id = $${i++}`);     params.push(stream_id); }
+  // "common=true" broadens the picker to every subject in the university (across
+  // its streams), so an existing subject from a sibling stream can be linked as a
+  // common subject. Otherwise subjects are scoped to their origin stream.
+  if (stream_id && common !== 'true') { conditions.push(`sub.stream_id = $${i++}`); params.push(stream_id); }
 
   // A batch has no subjects of its own — it inherits its stream's syllabus, so
   // filtering subjects "by batch" means the subjects of that batch's stream.

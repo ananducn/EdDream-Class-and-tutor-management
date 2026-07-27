@@ -11,6 +11,7 @@ import { Badge } from '@/components/ui/badge';
 import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
+import { SkeletonCards } from '@/components/Skeletons';
 
 // NIOS has no stream, so the shared container is the university itself
 // (NIOS +2 / NIOS SSLC). Syllabus: University → Subject → Chapter → Resource,
@@ -259,7 +260,7 @@ export default function NIOSCurriculumPage() {
       </div>
 
       {loading ? (
-        <p className="text-sm text-slate-500">Loading…</p>
+        <SkeletonCards count={5} />
       ) : items.length === 0 ? (
         <p className="text-sm text-slate-400">Nothing here yet.</p>
       ) : (

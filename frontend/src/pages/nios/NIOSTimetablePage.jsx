@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 import client from '@/api/client';
+import { SkeletonCards } from '@/components/Skeletons';
 
 export default function NIOSTimetablePage() {
   const navigate = useNavigate();
@@ -45,7 +46,7 @@ export default function NIOSTimetablePage() {
       <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">NIOS Timetable</h1>
 
       {loading ? (
-        <p className="text-sm text-slate-500">Loading…</p>
+        <SkeletonCards count={6} />
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {universities.map((uni) => (

@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import client from '@/api/client';
+import { SkeletonCards } from '@/components/Skeletons';
 
 export default function NIOSTimetableUniversityPage() {
   const { uniId } = useParams();
@@ -79,7 +80,7 @@ export default function NIOSTimetableUniversityPage() {
       </div>
 
       {loading ? (
-        <p className="text-sm text-slate-500 dark:text-slate-400">Loading...</p>
+        <SkeletonCards count={6} />
       ) : (
         <section className="space-y-3">
           <div className="flex items-center justify-between">

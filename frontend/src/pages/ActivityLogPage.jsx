@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import client from '@/api/client';
+import { SkeletonTable } from '@/components/Skeletons';
 
 function formatTs(str) {
   return new Date(str).toLocaleString('en-GB', {
@@ -110,7 +111,7 @@ export default function ActivityLogPage() {
       <Card>
         <CardContent className="pt-4">
           {loading ? (
-            <p className="text-sm text-slate-500 dark:text-slate-400">Loading…</p>
+            <SkeletonTable rows={8} cols={5} />
           ) : !logs.length ? (
             <p className="text-sm text-slate-500 dark:text-slate-400">No activity found.</p>
           ) : (

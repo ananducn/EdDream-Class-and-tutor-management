@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import StatusBadge from '@/components/StatusBadge';
 import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
+import { SkeletonTable } from '@/components/Skeletons';
 
 const emptyForm = { name: '', university_id: '', stream_id: '' };
 const emptyFilters = { search: '', university_id: '', stream_id: '', status: '' };
@@ -19,6 +20,7 @@ export default function BatchesPage() {
   const [batches, setBatches] = useState([]);
   const [universities, setUniversities] = useState([]);
   const [streams, setStreams] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
@@ -47,6 +49,7 @@ export default function BatchesPage() {
   }), [batches, filters]);
 
   async function load() {
+    setLoading(true);
     try {
       const [batchRes, uniRes] = await Promise.all([
         client.get('/batches?include_inactive=true'),
@@ -56,6 +59,8 @@ export default function BatchesPage() {
       setUniversities(uniRes.data);
     } catch {
       toast.error('Failed to load data.');
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -200,6 +205,7 @@ export default function BatchesPage() {
           <Button size="sm" onClick={openAdd}>Add New</Button>
         </CardHeader>
         <CardContent>
+          {loading ? <SkeletonTable rows={5} cols={5} /> : (
           <Table>
             <TableHeader>
               <TableRow>
@@ -236,6 +242,7 @@ export default function BatchesPage() {
               ))}
             </TableBody>
           </Table>
+          )}
         </CardContent>
       </Card>
 

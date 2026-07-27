@@ -9,7 +9,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
 import StatusBadge from '@/components/StatusBadge';
+import { SkeletonTable } from '@/components/Skeletons';
 import { useAuth } from '@/context/AuthContext';
 import client from '@/api/client';
 
@@ -41,6 +43,17 @@ const emptyFilters = {
 };
 
 const YEAR_OPTIONS = Array.from({ length: 11 }, (_, i) => String(2020 + i));
+
+// Format a "HH:MM[:SS]" time string as 12-hour, e.g. "15:05" -> "03:05 PM".
+function to12h(t) {
+  if (!t) return t;
+  const [h, m] = String(t).split(':');
+  const hr = parseInt(h, 10);
+  if (Number.isNaN(hr)) return t;
+  const ampm = hr >= 12 ? 'PM' : 'AM';
+  const h12 = hr % 12 || 12;
+  return `${String(h12).padStart(2, '0')}:${m} ${ampm}`;
+}
 
 function calcHours(start, end) {
   if (!start || !end) return '';
@@ -78,8 +91,11 @@ export default function NIOSClassesPage() {
   const [deleting, setDeleting] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
+  // Common-subject fan-out: schedule one class across many batches of the university.
+  const [multiBatch, setMultiBatch] = useState(false);
+  const [selectedBatchIds, setSelectedBatchIds] = useState([]);
   const [saving, setSaving] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   async function loadDropdowns() {
     const [fRes, uRes, bRes, sRes] = await Promise.all([
@@ -163,6 +179,17 @@ export default function NIOSClassesPage() {
     setForm((f) => ({ ...f, nios_batch_id: v }));
   }
 
+  function handleMultiBatchToggle(v) {
+    setMultiBatch(v);
+    setSelectedBatchIds([]);
+    setForm((f) => ({ ...f, nios_batch_id: '' }));
+  }
+
+  function toggleBatchSelection(id) {
+    const s = String(id);
+    setSelectedBatchIds((prev) => prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]);
+  }
+
   // Load (once) and cache the chapters for a given subject in this university
   async function loadChaptersForSubject(subjectId, current) {
     const map = current || chaptersBySubject;
@@ -213,6 +240,7 @@ export default function NIOSClassesPage() {
   function openAdd() {
     setEditing(null);
     setForm(emptyForm);
+    setMultiBatch(false); setSelectedBatchIds([]);
     setFormBatches(allBatches);
     setFormBatchSubjects([]);
     setChaptersBySubject({});
@@ -222,6 +250,7 @@ export default function NIOSClassesPage() {
 
   async function openEdit(c) {
     setEditing(c);
+    setMultiBatch(false); setSelectedBatchIds([]);
     setForm({
       date: c.date?.slice(0, 10) || '',
       start_time: c.start_time || '',
@@ -282,14 +311,16 @@ export default function NIOSClassesPage() {
 
   async function handleSubmit(e) {
     e.preventDefault();
+    const isFanOut = multiBatch && !editing;
     const requiredSelects = [
       ['faculty_id', 'Faculty'],
       ['nios_university_id', 'University'],
-      ['nios_batch_id', 'Batch'],
+      ...(isFanOut ? [] : [['nios_batch_id', 'Batch']]),
       ['class_mode', 'Class Mode'],
     ];
     const missing = requiredSelects.filter(([key]) => !form[key]).map(([, label]) => label);
     if (!form.nios_chapter_ids.length) missing.push('at least one Chapter');
+    if (isFanOut && selectedBatchIds.length === 0) missing.push('at least one Batch');
     if (missing.length) { toast.error(`Please select: ${missing.join(', ')}.`); return; }
 
     setSaving(true);
@@ -297,6 +328,9 @@ export default function NIOSClassesPage() {
       if (editing) {
         await client.put(`/nios/classes/${editing.id}`, form);
         toast.success('Class updated.');
+      } else if (isFanOut) {
+        await client.post('/nios/classes', { ...form, nios_batch_id: '', nios_batch_ids: selectedBatchIds });
+        toast.success(`Class added for ${selectedBatchIds.length} batch${selectedBatchIds.length > 1 ? 'es' : ''}.`);
       } else {
         await client.post('/nios/classes', form);
         toast.success('Class added.');
@@ -327,6 +361,17 @@ export default function NIOSClassesPage() {
   }
 
   const TH = 'text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400';
+
+  // Collapse fanned-out (common-subject) classes into a single representative row.
+  const groupSize = {};
+  for (const c of classes) if (c.nios_class_group_id) groupSize[c.nios_class_group_id] = (groupSize[c.nios_class_group_id] || 0) + 1;
+  const seenGroups = new Set();
+  const displayClasses = classes.filter((c) => {
+    if (!c.nios_class_group_id) return true;
+    if (seenGroups.has(c.nios_class_group_id)) return false;
+    seenGroups.add(c.nios_class_group_id);
+    return true;
+  });
 
   return (
     <div className="space-y-4">
@@ -423,6 +468,7 @@ export default function NIOSClassesPage() {
           <Button size="sm" onClick={openAdd}>Add Class</Button>
         </CardHeader>
         <CardContent>
+          {loading ? <SkeletonTable rows={6} cols={8} /> : (
           <Table>
             <TableHeader>
               <TableRow>
@@ -443,7 +489,7 @@ export default function NIOSClassesPage() {
                   <TableCell colSpan={10} className="text-center text-sm text-slate-500 dark:text-slate-400 py-8">No classes found.</TableCell>
                 </TableRow>
               )}
-              {classes.map((c) => (
+              {displayClasses.map((c) => (
                 <TableRow key={c.id}
                   className={c.class_status === 'taken' ? 'bg-green-100 hover:bg-green-200/70 dark:bg-green-900/30 dark:hover:bg-green-900/40' : ''}>
                   <TableCell className="text-slate-900 dark:text-slate-100">{c.date?.slice(0, 10)}</TableCell>
@@ -455,7 +501,11 @@ export default function NIOSClassesPage() {
                     )}
                   </TableCell>
                   <TableCell>{c.university_name || '—'}</TableCell>
-                  <TableCell>{c.batch_name || '—'}</TableCell>
+                  <TableCell>
+                    {c.nios_class_group_id
+                      ? <span title="Common-subject class across multiple batches">{c.batch_name || '—'} <span className="text-xs text-slate-400">+{(groupSize[c.nios_class_group_id] || 1) - 1} more</span></span>
+                      : (c.batch_name || '—')}
+                  </TableCell>
                   <TableCell>{c.total_hours || '—'}</TableCell>
                   <TableCell>{c.class_mode ? <StatusBadge status={c.class_mode} /> : '—'}</TableCell>
                   <TableCell>
@@ -483,6 +533,7 @@ export default function NIOSClassesPage() {
               ))}
             </TableBody>
           </Table>
+          )}
         </CardContent>
       </Card>
 
@@ -490,31 +541,49 @@ export default function NIOSClassesPage() {
       <Dialog open={!!viewDialog} onOpenChange={() => setViewDialog(null)}>
         <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>NIOS Class Details</DialogTitle></DialogHeader>
-          {viewDialog && (
-            <div className="space-y-2 text-sm">
-              {[
-                ['Date', viewDialog.date?.slice(0, 10)],
-                ['Faculty', viewDialog.faculty_name],
-                ['Subject', subjectSummary(viewDialog)],
-                ['University', viewDialog.university_name],
-                ['Batch', viewDialog.batch_name],
-                ['Chapter', chapterSummary(viewDialog)],
-                ['Status', viewDialog.class_status],
-                ['Start Time', viewDialog.start_time],
-                ['End Time', viewDialog.end_time],
-                ['Total Hours', viewDialog.total_hours],
-                ['Mode', viewDialog.class_mode],
-                ['Platform', viewDialog.platform_used],
-                ['Unit/Chapter', viewDialog.unit_chapter],
-                ['Notes', viewDialog.notes],
-              ].map(([label, val]) => val !== null && val !== undefined && val !== '' && (
-                <div key={label} className="flex gap-2">
-                  <span className="font-medium text-slate-700 dark:text-slate-300 w-32 shrink-0">{label}:</span>
-                  <span className="text-slate-500 dark:text-slate-400">{String(val)}</span>
+          {viewDialog && (() => {
+            const groupRows = viewDialog.nios_class_group_id
+              ? classes.filter((c) => String(c.nios_class_group_id) === String(viewDialog.nios_class_group_id))
+              : null;
+            const shared = [
+              ['Date', viewDialog.date?.slice(0, 10)],
+              ['Faculty', viewDialog.faculty_name],
+              ['Subject', subjectSummary(viewDialog)],
+              ['University', viewDialog.university_name],
+              ...(groupRows ? [] : [['Batch', viewDialog.batch_name]]),
+              ['Chapter', chapterSummary(viewDialog)],
+              ['Status', viewDialog.class_status],
+              ['Start Time', to12h(viewDialog.start_time)],
+              ['End Time', to12h(viewDialog.end_time)],
+              ['Total Hours', viewDialog.total_hours],
+              ['Mode', viewDialog.class_mode],
+              ['Platform', viewDialog.platform_used],
+              ['Unit/Chapter', viewDialog.unit_chapter],
+              ['Notes', viewDialog.notes],
+            ];
+            return (
+              <div className="space-y-3 text-sm">
+                <div className="space-y-2">
+                  {shared.map(([label, val]) => val !== null && val !== undefined && val !== '' && (
+                    <div key={label} className="flex gap-2">
+                      <span className="font-medium text-slate-700 dark:text-slate-300 w-32 shrink-0">{label}:</span>
+                      <span className="text-slate-500 dark:text-slate-400">{String(val)}</span>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          )}
+                {groupRows && (
+                  <div className="space-y-1">
+                    <p className="font-medium text-slate-700 dark:text-slate-300">Scheduled for {groupRows.length} batch{groupRows.length > 1 ? 'es' : ''}:</p>
+                    <ul className="rounded-md border border-slate-200 dark:border-slate-700 divide-y divide-slate-200 dark:divide-slate-700">
+                      {groupRows.map((r) => (
+                        <li key={r.id} className="px-3 py-1.5 text-slate-500 dark:text-slate-400">{r.batch_name || '—'}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </DialogContent>
       </Dialog>
 
@@ -577,13 +646,47 @@ export default function NIOSClassesPage() {
                     <SelectContent>{universities.map((u) => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}</SelectContent>
                   </Select>
                 </div>
-                <div className="space-y-1">
-                  <Label>Batch *</Label>
-                  <Select value={form.nios_batch_id} onValueChange={handleFormBatchChange} disabled={!form.nios_university_id}>
-                    <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
-                    <SelectContent>{formBatches.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.name}</SelectItem>)}</SelectContent>
-                  </Select>
-                </div>
+                {!editing && (
+                  <div className="col-span-2 flex items-center justify-between rounded-md border border-slate-200 dark:border-slate-700 px-3 py-2">
+                    <div>
+                      <Label className="mb-0">Common subject</Label>
+                      <p className="text-xs text-slate-400">Schedule this class for multiple batches of this university at once.</p>
+                    </div>
+                    <Switch checked={multiBatch} onCheckedChange={handleMultiBatchToggle} />
+                  </div>
+                )}
+                {multiBatch && !editing ? (
+                  <div className="space-y-2 col-span-2">
+                    <Label>Batches * <span className="text-xs font-normal text-slate-400">({selectedBatchIds.length} selected)</span></Label>
+                    {!form.nios_university_id ? (
+                      <p className="text-xs text-slate-400">Pick a university to see its batches.</p>
+                    ) : formBatches.length === 0 ? (
+                      <p className="text-xs text-slate-400">No batches in this university.</p>
+                    ) : (
+                      <div className="space-y-1 rounded-md border border-slate-200 dark:border-slate-700 p-3 max-h-56 overflow-y-auto">
+                        {formBatches.map((b) => (
+                          <label key={b.id} className="flex items-center gap-2 text-sm cursor-pointer pl-1">
+                            <input
+                              type="checkbox"
+                              className="h-4 w-4"
+                              checked={selectedBatchIds.includes(String(b.id))}
+                              onChange={() => toggleBatchSelection(b.id)}
+                            />
+                            {b.name}
+                          </label>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <Label>Batch *</Label>
+                    <Select value={form.nios_batch_id} onValueChange={handleFormBatchChange} disabled={!form.nios_university_id}>
+                      <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
+                      <SelectContent>{formBatches.map((b) => <SelectItem key={b.id} value={String(b.id)}>{b.name}</SelectItem>)}</SelectContent>
+                    </Select>
+                  </div>
+                )}
                 <div className="space-y-2 col-span-2">
                   <Label>Chapters * <span className="text-xs font-normal text-slate-500 dark:text-slate-400">(pick one or more — from a single subject or across subjects)</span></Label>
 

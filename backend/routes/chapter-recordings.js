@@ -26,9 +26,16 @@ const BOOL_FIELDS = new Set([
 // is what the recording manager lists at the chapter level.
 router.get('/', auth, async (req, res, next) => {
   try {
-    const { academic_year_subject_id } = req.query;
-    if (!academic_year_subject_id) {
-      return res.status(400).json({ error: 'academic_year_subject_id is required.' });
+    const { academic_year_subject_id, subject_id } = req.query;
+    // Chapters + recordings now root on the subject (shared across stream-years).
+    // Still accept a placement id and resolve it to the subject.
+    let resolvedSubject = subject_id ? Number(subject_id) : null;
+    if (!resolvedSubject && academic_year_subject_id) {
+      const p = await sql`SELECT subject_id FROM academic_year_subjects WHERE id = ${academic_year_subject_id}`;
+      resolvedSubject = p[0]?.subject_id ?? null;
+    }
+    if (!resolvedSubject) {
+      return res.status(400).json({ error: 'subject_id or academic_year_subject_id is required.' });
     }
     const rows = await sql`
       SELECT ch.id AS chapter_id, ch.title AS chapter_title, ch.chapter_order,
@@ -42,31 +49,40 @@ router.get('/', auth, async (req, res, next) => {
       FROM chapters ch
       LEFT JOIN chapter_recordings r ON r.chapter_id = ch.id
       LEFT JOIN faculty f ON f.id = r.faculty_id
-      WHERE ch.academic_year_subject_id = ${academic_year_subject_id} AND ch.is_active = true
+      WHERE ch.subject_id = ${resolvedSubject} AND ch.is_active = true
       ORDER BY ch.chapter_order, ch.title
     `;
     res.json(rows);
   } catch (err) { next(err); }
 });
 
-// Recording progress across a stream's whole syllabus, grouped so the overview
-// page can render per-subject cards and top-line stats. Shared by all batches.
+// Recording progress across a syllabus, at whatever level is selected: a whole
+// university (all its streams), a stream, an academic year, or a semester. Returns
+// per-chapter rows so the overview page can compute stats and list chapters.
 router.get('/overview', auth, async (req, res, next) => {
   try {
-    const { stream_id, academic_year_id, semester_id } = req.query;
-    if (!stream_id) return res.status(400).json({ error: 'stream_id is required.' });
+    const { university_id, stream_id, academic_year_id, semester_id } = req.query;
+    if (!stream_id && !university_id) {
+      return res.status(400).json({ error: 'university_id or stream_id is required.' });
+    }
 
-    const conditions = ['ay.stream_id = $1'];
-    const params = [stream_id];
-    let i = 2;
-    if (academic_year_id) { conditions.push(`ay.id = $${i++}`);           params.push(academic_year_id); }
-    if (semester_id)      { conditions.push(`ays.semester_id = $${i++}`); params.push(semester_id); }
+    const conditions = [];
+    const params = [];
+    let i = 1;
+    // stream_id narrows to one stream; otherwise university_id aggregates every
+    // stream in the university.
+    if (stream_id)          { conditions.push(`ay.stream_id = $${i++}`);      params.push(stream_id); }
+    else                    { conditions.push(`st.university_id = $${i++}`);  params.push(university_id); }
+    if (academic_year_id)   { conditions.push(`ay.id = $${i++}`);             params.push(academic_year_id); }
+    if (semester_id)        { conditions.push(`ays.semester_id = $${i++}`);   params.push(semester_id); }
 
     const rows = await sql.query(`
       SELECT
         ays.id                AS academic_year_subject_id,
         ays.subject_id,
         sub.name              AS subject_name,
+        st.name               AS stream_name,
+        ay.name               AS academic_year_name,
         ays.semester_id,
         sem.name              AS semester_name,
         ch.id                 AS chapter_id,
@@ -78,13 +94,14 @@ router.get('/overview', auth, async (req, res, next) => {
            COALESCE(r.upload_student_app,false) OR COALESCE(r.upload_harddisk,false)
         ))                                                                       AS recorded_not_uploaded
       FROM academic_years ay
+      JOIN  streams st                 ON st.id = ay.stream_id
       JOIN  academic_year_subjects ays ON ays.academic_year_id = ay.id
       JOIN  subjects sub               ON sub.id = ays.subject_id
       LEFT JOIN semesters sem          ON sem.id = ays.semester_id
-      LEFT JOIN chapters ch            ON ch.academic_year_subject_id = ays.id AND ch.is_active = true
+      LEFT JOIN chapters ch            ON ch.subject_id = ays.subject_id AND ch.is_active = true
       LEFT JOIN chapter_recordings r   ON r.chapter_id = ch.id
       WHERE ${conditions.join(' AND ')}
-      ORDER BY sub.name, ch.chapter_order NULLS LAST
+      ORDER BY st.name, sub.name, ch.chapter_order NULLS LAST
     `, params);
     res.json(rows);
   } catch (err) { next(err); }

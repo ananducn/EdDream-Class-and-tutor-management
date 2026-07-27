@@ -1,12 +1,13 @@
 import express from 'express';
 import { sql } from '../db.js';
 import { auth } from '../middleware/auth.js';
+import { cacheRoute } from '../middleware/cache.js';
 import { logActivity } from '../middleware/logger.js';
 
 const router = express.Router();
 
 // Academic years belong to a STREAM and are shared by every batch of that stream.
-router.get('/', auth, async (req, res, next) => {
+router.get('/', auth, cacheRoute(60000), async (req, res, next) => {
   try {
     const { stream_id, include_inactive } = req.query;
     const conditions = [];
