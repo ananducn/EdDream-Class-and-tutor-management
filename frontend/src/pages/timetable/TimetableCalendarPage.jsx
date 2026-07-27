@@ -6,10 +6,12 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Switch } from '@/components/ui/switch';
 import StatusBadge from '@/components/StatusBadge';
 import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
+import { SkeletonCards } from '@/components/Skeletons';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -75,6 +77,44 @@ function isToday(date) {
 
 const emptySlotForm = { day_of_week: '', start_time: '', end_time: '', faculty_id: '', subject_id: '', notes: '' };
 
+// A "common class" is one slot shared by several batches. The picker offers the
+// batches of every stream (in this university) whose syllabus includes the chosen
+// subject — the same rule the Classes page uses for a common-subject fan-out.
+function CommonBatchPicker({ subjectId, streams, batches, selected, onToggle }) {
+  if (!subjectId) {
+    return <p className="text-xs text-slate-400">Pick a subject to see the batches of every stream that shares it.</p>;
+  }
+  if (streams.length === 0) {
+    return <p className="text-xs text-slate-400">This subject isn't shared with any other stream in this university.</p>;
+  }
+  return (
+    <div className="space-y-3 rounded-md border border-slate-200 dark:border-slate-700 p-3 max-h-48 overflow-y-auto">
+      {streams.map((st) => {
+        const streamBatches = batches.filter((b) => String(b.stream_id) === String(st.stream_id));
+        return (
+          <div key={st.stream_id} className="space-y-1">
+            <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">{st.stream_name}</p>
+            {streamBatches.length === 0
+              ? <p className="text-xs text-slate-400 pl-1">No batches in this stream.</p>
+              : streamBatches.map((b) => (
+                  <label key={b.id} className="flex items-center gap-2 text-sm cursor-pointer pl-1 text-slate-700 dark:text-slate-300">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4"
+                      checked={selected.includes(String(b.id))}
+                      onChange={() => onToggle(b.id)}
+                    />
+                    {b.name}
+                  </label>
+                ))
+            }
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function TimetableCalendarPage() {
@@ -88,6 +128,12 @@ export default function TimetableCalendarPage() {
   const [semesters, setSemesters] = useState([]);
   const [selectedYearId, setSelectedYearId] = useState('');
   const [selectedSemesterId, setSelectedSemesterId] = useState('');
+  // Whether the semester list for the selected year has been fetched — lets the
+  // drill know whether to show the semester step or skip straight to the calendar.
+  const [semResolved, setSemResolved] = useState(false);
+  // Whether the initial reference data (faculty, academic years) has loaded, so the
+  // year step shows a skeleton instead of flashing "no years" while fetching.
+  const [dropdownsLoaded, setDropdownsLoaded] = useState(false);
 
   // Reference data
   const [faculty, setFaculty] = useState([]);
@@ -109,6 +155,18 @@ export default function TimetableCalendarPage() {
   const [slotOpen, setSlotOpen] = useState(false);
   const [slotForm, setSlotForm] = useState(emptySlotForm);
   const [savingSlot, setSavingSlot] = useState(false);
+
+  // Common-class fan-out: the streams (same university) sharing the chosen
+  // subject, every batch in this university, and the batches ticked to share with.
+  const [commonClass, setCommonClass] = useState(false);
+  const [commonStreams, setCommonStreams] = useState([]);
+  const [allBatches, setAllBatches] = useState([]);
+  const [sharedBatchIds, setSharedBatchIds] = useState([]);
+
+  // Same three, for the edit dialog — editing can change who a slot is shared with.
+  const [editCommonClass, setEditCommonClass] = useState(false);
+  const [editCommonStreams, setEditCommonStreams] = useState([]);
+  const [editSharedBatchIds, setEditSharedBatchIds] = useState([]);
 
   // Edit slot dialog
   const [editSlotOpen, setEditSlotOpen] = useState(false);
@@ -136,6 +194,8 @@ export default function TimetableCalendarPage() {
       await loadSubjects(selectedYearId, selectedSemesterId);
     } catch {
       toast.error('Failed to load reference data.');
+    } finally {
+      setDropdownsLoaded(true);
     }
   }
 
@@ -151,9 +211,10 @@ export default function TimetableCalendarPage() {
 
   const loadTimetables = useCallback(async () => {
     try {
+      // A timetable is one grid per (batch, week); the selected year/semester is
+      // context for the subject list and for classes added here, not a filter that
+      // would hide week timetables created elsewhere (e.g. from the Classes page).
       const params = { batch_id: batchId };
-      if (selectedYearId)     params.academic_year_id = selectedYearId;
-      if (selectedSemesterId) params.semester_id      = selectedSemesterId;
       const res = await client.get('/timetables', { params });
       const batchTTs = res.data.filter((t) => String(t.university_id) === universityId);
 
@@ -183,7 +244,7 @@ export default function TimetableCalendarPage() {
     } catch {
       toast.error('Failed to load timetables.');
     }
-  }, [universityId, batchId, selectedYearId, selectedSemesterId]);
+  }, [universityId, batchId]);
 
   useEffect(() => {
     loadDropdowns();
@@ -205,10 +266,12 @@ export default function TimetableCalendarPage() {
     setSelectedYearId(yearId);
     setSelectedSemesterId('');
     setSemesters([]);
+    setSemResolved(false);
     setTimetableByWeek({});
     if (yearId) {
       const res = await client.get(`/semesters?academic_year_id=${yearId}`);
       setSemesters(res.data);
+      setSemResolved(true);
       await loadSubjects(yearId, '');
     } else {
       await loadSubjects('', '');
@@ -220,6 +283,35 @@ export default function TimetableCalendarPage() {
     setTimetableByWeek({});
     await loadSubjects(selectedYearId, semId);
   }
+
+  // ── Drill-down step (Batch → Year → Sem → Calendar) ──────────────────────────
+  // Which step to show: pick a year, then a semester (only when the year has
+  // them), before the calendar/add-slot is available.
+  const drillStep = !selectedYearId
+    ? 'year'
+    : !semResolved
+      ? 'loading'
+      : (semesters.length > 0 && !selectedSemesterId)
+        ? 'semester'
+        : 'calendar';
+
+  // Breadcrumb: clicking Batch clears year+sem; clicking Year clears sem.
+  function backToYearStep() {
+    setSelectedYearId('');
+    setSelectedSemesterId('');
+    setSemesters([]);
+    setSemResolved(false);
+    setTimetableByWeek({});
+    loadSubjects('', '');
+  }
+  function backToSemesterStep() {
+    setSelectedSemesterId('');
+    setTimetableByWeek({});
+    loadSubjects(selectedYearId, '');
+  }
+
+  const selectedYearName = academicYears.find((y) => String(y.id) === selectedYearId)?.name || '';
+  const selectedSemesterName = semesters.find((s) => String(s.id) === selectedSemesterId)?.name || '';
 
   // ── Calendar navigation ──────────────────────────────────────────────────────
 
@@ -281,14 +373,15 @@ export default function TimetableCalendarPage() {
     if (!currentTimetable) return;
     const ok = await confirm({
       title: 'Delete timetable?',
-      description: 'Are you sure you want to delete this week\'s timetable? This cannot be undone.',
+      description: `Are you sure you want to delete this week's timetable? Its ${currentTimetable.slots?.length || 0} slot(s) and the class entries they created will be removed too. This cannot be undone.`,
       confirmLabel: 'Delete',
       destructive: true,
     });
     if (!ok) return;
     try {
-      await client.delete(`/timetables/${currentTimetable.id}`);
-      toast.success('Timetable deleted.');
+      const res = await client.delete(`/timetables/${currentTimetable.id}`);
+      const gone = res.data?.classes_removed || 0;
+      toast.success(gone ? `Timetable deleted — ${gone} class entr${gone > 1 ? 'ies' : 'y'} removed.` : 'Timetable deleted.');
       await loadTimetables();
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to delete.');
@@ -314,7 +407,61 @@ export default function TimetableCalendarPage() {
 
   function openAddSlot(prefillDay) {
     setSlotForm({ ...emptySlotForm, day_of_week: prefillDay || '' });
+    setCommonClass(false);
+    setCommonStreams([]);
+    setSharedBatchIds([]);
     setSlotOpen(true);
+  }
+
+  // Streams (same university) whose syllabus includes this subject — those are the
+  // batches worth offering to share with. Returns the list so callers can decide
+  // which dialog's state to fill.
+  async function fetchCommonStreams(subjectId) {
+    if (!subjectId) return [];
+    const [aysRes, bRes] = await Promise.all([
+      client.get(`/academic-year-subjects?subject_id=${subjectId}`),
+      allBatches.length ? Promise.resolve({ data: allBatches }) : client.get('/batches', { params: { university_id: universityId } }),
+    ]);
+    setAllBatches(bRes.data);
+    const seen = new Set();
+    const list = [];
+    for (const p of aysRes.data) {
+      if (String(p.university_id) !== String(universityId)) continue;
+      if (seen.has(String(p.stream_id))) continue;
+      seen.add(String(p.stream_id));
+      list.push({ stream_id: p.stream_id, stream_name: p.stream_name });
+    }
+    return list;
+  }
+
+  async function loadCommonStreams(subjectId) {
+    try { setCommonStreams(await fetchCommonStreams(subjectId)); }
+    catch { setCommonStreams([]); }
+  }
+
+  async function loadEditCommonStreams(subjectId) {
+    try { setEditCommonStreams(await fetchCommonStreams(subjectId)); }
+    catch { setEditCommonStreams([]); }
+  }
+
+  async function handleCommonToggle(v) {
+    setCommonClass(v);
+    setSharedBatchIds([]);
+    if (v) await loadCommonStreams(slotForm.subject_id);
+    else setCommonStreams([]);
+  }
+
+  async function handleSlotSubjectChange(v) {
+    setSlotForm((f) => ({ ...f, subject_id: v }));
+    if (commonClass) {
+      setSharedBatchIds([]);
+      await loadCommonStreams(v);
+    }
+  }
+
+  function toggleSharedBatch(id) {
+    const key = String(id);
+    setSharedBatchIds((prev) => (prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]));
   }
 
   async function handleAddSlot(e) {
@@ -322,10 +469,17 @@ export default function TimetableCalendarPage() {
     setSavingSlot(true);
     try {
       const tt = await ensureWeekTimetable();
-      await client.post(`/timetables/${tt.id}/slots`, slotForm);
-      toast.success('Slot added.');
+      // batch_ids fans the slot out to those batches' grids for the same week and
+      // links the copies, so a later edit or delete applies to all of them.
+      const payload = commonClass && sharedBatchIds.length > 0
+        ? { ...slotForm, batch_ids: sharedBatchIds }
+        : slotForm;
+      const res = await client.post(`/timetables/${tt.id}/slots`, payload);
+      const shared = res.data?.shared_count || 1;
+      toast.success(shared > 1 ? `Common slot added to ${shared} batches.` : 'Slot added.');
       setSlotOpen(false);
       setSlotForm(emptySlotForm);
+      setCommonClass(false); setCommonStreams([]); setSharedBatchIds([]);
       await loadTimetables();
     } catch (err) {
       toast.error(err.response?.data?.error || 'Something went wrong.');
@@ -335,16 +489,20 @@ export default function TimetableCalendarPage() {
   }
 
   async function handleDeleteSlot(slot) {
+    const shared = slot.shared_batches?.length || 0;
     const ok = await confirm({
-      title: 'Remove slot?',
-      description: 'Are you sure you want to remove this slot from the timetable?',
+      title: shared > 0 ? 'Remove common slot?' : 'Remove slot?',
+      description: shared > 0
+        ? `This is a common class shared with ${slot.shared_batches.join(', ')}. Removing it will remove it from all ${shared + 1} batches, along with the class entries it created.`
+        : 'Removing this slot also removes the class entry it created. Are you sure?',
       confirmLabel: 'Remove',
       destructive: true,
     });
     if (!ok) return;
     try {
-      await client.delete(`/timetables/${slot._timetableId}/slots/${slot.id}`);
-      toast.success('Slot removed.');
+      const res = await client.delete(`/timetables/${slot._timetableId}/slots/${slot.id}`);
+      const gone = res.data?.classes_removed || 0;
+      toast.success(gone ? `Slot removed — ${gone} class entr${gone > 1 ? 'ies' : 'y'} removed.` : 'Slot removed.');
       await loadTimetables();
     } catch {
       toast.error('Failed to remove slot.');
@@ -363,7 +521,32 @@ export default function TimetableCalendarPage() {
       subject_id: slot.subject_id ? String(slot.subject_id) : '',
       notes: slot.notes || '',
     });
+    // Prefill the sharing state from the slot's current group.
+    const shared = (slot.shared_batch_ids || []).map(String);
+    setEditSharedBatchIds(shared);
+    setEditCommonClass(shared.length > 0);
+    setEditCommonStreams([]);
+    if (slot.subject_id) loadEditCommonStreams(String(slot.subject_id));
     setEditSlotOpen(true);
+  }
+
+  async function handleEditCommonToggle(v) {
+    setEditCommonClass(v);
+    if (v) await loadEditCommonStreams(editSlotForm.subject_id);
+    else setEditSharedBatchIds([]);
+  }
+
+  async function handleEditSubjectChange(v) {
+    setEditSlotForm((f) => ({ ...f, subject_id: v }));
+    if (editCommonClass) {
+      setEditSharedBatchIds([]);
+      await loadEditCommonStreams(v);
+    }
+  }
+
+  function toggleEditSharedBatch(id) {
+    const key = String(id);
+    setEditSharedBatchIds((prev) => (prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]));
   }
 
   async function handleEditSlot(e) {
@@ -371,11 +554,13 @@ export default function TimetableCalendarPage() {
     if (!editSlotTarget) return;
     setSavingEditSlot(true);
     try {
-      await client.put(
+      // batch_ids is the full desired set of OTHER batches; sending [] un-shares.
+      const res = await client.put(
         `/timetables/${editSlotTarget.timetableId}/slots/${editSlotTarget.slot.id}`,
-        editSlotForm
+        { ...editSlotForm, batch_ids: editCommonClass ? editSharedBatchIds : [] }
       );
-      toast.success('Slot updated.');
+      const shared = res.data?.shared_count || 1;
+      toast.success(shared > 1 ? `Common slot updated across ${shared} batches.` : 'Slot updated.');
       setEditSlotOpen(false);
       setEditSlotTarget(null);
       await loadTimetables();
@@ -416,45 +601,94 @@ export default function TimetableCalendarPage() {
           {streamName || '...'}
         </button>
         <span className="text-slate-300 dark:text-slate-600">›</span>
-        <span className="font-semibold text-slate-900 dark:text-slate-100">
-          {batchName || '...'}
-        </span>
+        {selectedYearId ? (
+          <button
+            onClick={backToYearStep}
+            className="text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+          >
+            {batchName || '...'}
+          </button>
+        ) : (
+          <span className="font-semibold text-slate-900 dark:text-slate-100">{batchName || '...'}</span>
+        )}
+        {selectedYearId && (
+          <>
+            <span className="text-slate-300 dark:text-slate-600">›</span>
+            {selectedSemesterId ? (
+              <button
+                onClick={backToSemesterStep}
+                className="text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+              >
+                {selectedYearName}
+              </button>
+            ) : (
+              <span className="font-semibold text-slate-900 dark:text-slate-100">{selectedYearName}</span>
+            )}
+          </>
+        )}
+        {selectedSemesterId && (
+          <>
+            <span className="text-slate-300 dark:text-slate-600">›</span>
+            <span className="font-semibold text-slate-900 dark:text-slate-100">{selectedSemesterName}</span>
+          </>
+        )}
       </div>
 
-      {/* ── Year / Semester selector ── */}
-      {academicYears.length > 0 && (
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2">
-            <label className="text-sm text-slate-600 dark:text-slate-400 shrink-0">Academic Year</label>
-            <select
-              value={selectedYearId}
-              onChange={(e) => handleYearChange(e.target.value)}
-              className="text-sm border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            >
-              <option value="">All years</option>
+      {/* ── Drill step: pick Academic Year ── */}
+      {drillStep === 'year' && (
+        <section className="space-y-3">
+          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">Select Academic Year</h2>
+          {!dropdownsLoaded ? (
+            <SkeletonCards count={3} />
+          ) : academicYears.length === 0 ? (
+            <p className="text-sm text-slate-500 dark:text-slate-400">No academic years defined for this stream.</p>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {academicYears.map((y) => (
-                <option key={y.id} value={String(y.id)}>{y.name}</option>
+                <button
+                  key={y.id}
+                  onClick={() => handleYearChange(String(y.id))}
+                  className="text-left rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 hover:border-indigo-300 dark:hover:border-indigo-600 hover:shadow-md transition-all group"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="font-medium text-slate-900 dark:text-slate-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors truncate">{y.name}</p>
+                    <span className="text-slate-300 dark:text-slate-600 group-hover:text-indigo-400 text-xl leading-none shrink-0">›</span>
+                  </div>
+                </button>
               ))}
-            </select>
-          </div>
-          {semesters.length > 0 && (
-            <div className="flex items-center gap-2">
-              <label className="text-sm text-slate-600 dark:text-slate-400 shrink-0">Semester</label>
-              <select
-                value={selectedSemesterId}
-                onChange={(e) => handleSemesterChange(e.target.value)}
-                className="text-sm border border-slate-200 dark:border-slate-700 rounded-md px-2 py-1.5 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-              >
-                <option value="">All semesters</option>
-                {semesters.map((s) => (
-                  <option key={s.id} value={String(s.id)}>{s.name}</option>
-                ))}
-              </select>
             </div>
           )}
-        </div>
+        </section>
       )}
 
+      {/* ── Drill step: loading semesters ── */}
+      {drillStep === 'loading' && (
+        <SkeletonCards count={3} />
+      )}
+
+      {/* ── Drill step: pick Semester (only when the year has semesters) ── */}
+      {drillStep === 'semester' && (
+        <section className="space-y-3">
+          <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">Select Semester</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            {semesters.map((s) => (
+              <button
+                key={s.id}
+                onClick={() => handleSemesterChange(String(s.id))}
+                className="text-left rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 p-4 hover:border-indigo-300 dark:hover:border-indigo-600 hover:shadow-md transition-all group"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-medium text-slate-900 dark:text-slate-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors truncate">{s.name}</p>
+                  <span className="text-slate-300 dark:text-slate-600 group-hover:text-indigo-400 text-xl leading-none shrink-0">›</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {drillStep === 'calendar' && (
+      <>
       {/* ── Control bar ── */}
       <div className="flex flex-wrap items-center gap-2">
         {currentTimetable ? (
@@ -529,6 +763,8 @@ export default function TimetableCalendarPage() {
           onWeekClick={(date) => { setCurrentDate(date); setView('week'); }}
         />
       )}
+      </>
+      )}
 
       {/* ── Add Slot dialog ── */}
       <Dialog open={slotOpen} onOpenChange={setSlotOpen}>
@@ -569,14 +805,50 @@ export default function TimetableCalendarPage() {
             </div>
             <div className="space-y-1.5">
               <Label>Subject</Label>
-              <Select value={slotForm.subject_id}
-                onValueChange={(v) => setSlotForm({ ...slotForm, subject_id: v })}>
+              <Select value={slotForm.subject_id} onValueChange={handleSlotSubjectChange}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
                 <SelectContent>
                   {subjects.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Common class — the same slot in several batches' grids for this week. */}
+            <div className={`rounded-lg border p-3 space-y-2 transition-colors ${
+              commonClass
+                ? 'border-indigo-300 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950'
+                : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900'
+            }`}>
+              <label htmlFor="common_class" className="flex items-center justify-between gap-4 cursor-pointer">
+                <div>
+                  <p className={`text-sm font-semibold ${commonClass ? 'text-indigo-800 dark:text-indigo-200' : 'text-slate-800 dark:text-slate-200'}`}>
+                    Common class — also add to other batches
+                  </p>
+                  <p className={`text-xs mt-0.5 ${commonClass ? 'text-indigo-700/80 dark:text-indigo-300/80' : 'text-slate-500 dark:text-slate-400'}`}>
+                    {commonClass
+                      ? 'One shared slot — editing or removing it later applies to every batch.'
+                      : 'Off — this slot belongs to this batch only.'}
+                  </p>
+                </div>
+                <Switch checked={commonClass} onCheckedChange={handleCommonToggle} id="common_class" className="shrink-0" />
+              </label>
+
+              {commonClass && (
+                <div className="space-y-1.5 pt-1">
+                  <Label className="text-xs">
+                    Share with <span className="font-normal text-slate-400">({sharedBatchIds.length} selected)</span>
+                  </Label>
+                  <CommonBatchPicker
+                    subjectId={slotForm.subject_id}
+                    streams={commonStreams}
+                    batches={allBatches.filter((b) => String(b.id) !== String(batchId))}
+                    selected={sharedBatchIds}
+                    onToggle={toggleSharedBatch}
+                  />
+                </div>
+              )}
+            </div>
+
             <div className="space-y-1.5">
               <Label>Notes</Label>
               <Input value={slotForm.notes}
@@ -584,8 +856,15 @@ export default function TimetableCalendarPage() {
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setSlotOpen(false)}>Cancel</Button>
-              <Button type="submit" disabled={savingSlot || !slotForm.day_of_week}>
-                {savingSlot ? 'Adding…' : 'Add Slot'}
+              <Button
+                type="submit"
+                disabled={savingSlot || !slotForm.day_of_week || (commonClass && sharedBatchIds.length === 0)}
+              >
+                {savingSlot
+                  ? 'Adding…'
+                  : commonClass && sharedBatchIds.length > 0
+                    ? `Add to ${sharedBatchIds.length + 1} batches`
+                    : 'Add Slot'}
               </Button>
             </DialogFooter>
           </form>
@@ -596,7 +875,12 @@ export default function TimetableCalendarPage() {
       <Dialog open={editSlotOpen} onOpenChange={setEditSlotOpen}>
         <DialogContent>
           <DialogHeader><DialogTitle>Edit Slot</DialogTitle></DialogHeader>
-          <form onSubmit={handleEditSlot} className="space-y-4 pt-1">
+          {editSlotTarget?.slot?.shared_batches?.length > 0 && (
+            <p className="text-xs rounded-md border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950 text-indigo-800 dark:text-indigo-200 p-2">
+              ⧉ Common class — these changes also apply to {editSlotTarget.slot.shared_batches.join(', ')}.
+            </p>
+          )}
+          <form onSubmit={handleEditSlot} className="space-y-4 pt-1 max-h-[70vh] overflow-y-auto">
             <div className="space-y-1.5">
               <Label>Day *</Label>
               <Select value={editSlotForm.day_of_week}
@@ -631,14 +915,50 @@ export default function TimetableCalendarPage() {
             </div>
             <div className="space-y-1.5">
               <Label>Subject</Label>
-              <Select value={editSlotForm.subject_id}
-                onValueChange={(v) => setEditSlotForm({ ...editSlotForm, subject_id: v })}>
+              <Select value={editSlotForm.subject_id} onValueChange={handleEditSubjectChange}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="Select" /></SelectTrigger>
                 <SelectContent>
                   {subjects.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
+
+            {/* Sharing can be changed here: tick to add a batch, untick to drop it. */}
+            <div className={`rounded-lg border p-3 space-y-2 transition-colors ${
+              editCommonClass
+                ? 'border-indigo-300 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950'
+                : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900'
+            }`}>
+              <label htmlFor="edit_common_class" className="flex items-center justify-between gap-4 cursor-pointer">
+                <div>
+                  <p className={`text-sm font-semibold ${editCommonClass ? 'text-indigo-800 dark:text-indigo-200' : 'text-slate-800 dark:text-slate-200'}`}>
+                    Common class — shared with other batches
+                  </p>
+                  <p className={`text-xs mt-0.5 ${editCommonClass ? 'text-indigo-700/80 dark:text-indigo-300/80' : 'text-slate-500 dark:text-slate-400'}`}>
+                    {editCommonClass
+                      ? 'Untick a batch to remove this slot from it; tick one to add it.'
+                      : 'Off — saving will remove this slot from every other batch.'}
+                  </p>
+                </div>
+                <Switch checked={editCommonClass} onCheckedChange={handleEditCommonToggle} id="edit_common_class" className="shrink-0" />
+              </label>
+
+              {editCommonClass && (
+                <div className="space-y-1.5 pt-1">
+                  <Label className="text-xs">
+                    Shared with <span className="font-normal text-slate-400">({editSharedBatchIds.length} selected)</span>
+                  </Label>
+                  <CommonBatchPicker
+                    subjectId={editSlotForm.subject_id}
+                    streams={editCommonStreams}
+                    batches={allBatches.filter((b) => String(b.id) !== String(batchId))}
+                    selected={editSharedBatchIds}
+                    onToggle={toggleEditSharedBatch}
+                  />
+                </div>
+              )}
+            </div>
+
             <div className="space-y-1.5">
               <Label>Notes</Label>
               <Input value={editSlotForm.notes}
@@ -646,7 +966,10 @@ export default function TimetableCalendarPage() {
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setEditSlotOpen(false)}>Cancel</Button>
-              <Button type="submit" disabled={savingEditSlot}>
+              <Button
+                type="submit"
+                disabled={savingEditSlot || (editCommonClass && editSharedBatchIds.length === 0)}
+              >
                 {savingEditSlot ? 'Saving…' : 'Save Changes'}
               </Button>
             </DialogFooter>
@@ -726,6 +1049,14 @@ function SlotCard({ slot, onEdit, onSetStatus, onDelete }) {
       {(slot.start_time || slot.end_time) && (
         <p className="text-xs text-slate-400 dark:text-slate-500">
           {slot.start_time?.slice(0, 5)} – {slot.end_time?.slice(0, 5)}
+        </p>
+      )}
+      {slot.shared_batches?.length > 0 && (
+        <p
+          className="text-xs text-indigo-600 dark:text-indigo-400 font-medium"
+          title={`Shared with: ${slot.shared_batches.join(', ')}`}
+        >
+          ⧉ Shared × {slot.shared_batches.length + 1}
         </p>
       )}
       {slot.notes && (

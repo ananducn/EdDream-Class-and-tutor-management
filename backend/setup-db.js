@@ -51,7 +51,7 @@ await sql`
     name TEXT NOT NULL,
     subject_code TEXT,
     university_id INTEGER REFERENCES universities(id),
-    stream_id INTEGER NOT NULL REFERENCES streams(id),
+    stream_id INTEGER REFERENCES streams(id),
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ DEFAULT NOW()
   )
@@ -114,6 +114,7 @@ await sql`
     notes TEXT,
     payment_status TEXT DEFAULT 'pending' CHECK (payment_status IN ('paid', 'pending')),
     payment_remarks TEXT,
+    class_group_id INTEGER,
     created_by INTEGER REFERENCES users(id),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -141,6 +142,7 @@ await sql`
     faculty_id INTEGER REFERENCES faculty(id),
     subject_id INTEGER REFERENCES subjects(id),
     class_taken_status TEXT DEFAULT 'scheduled' CHECK (class_taken_status IN ('scheduled','taken','not_taken')),
+    slot_group_id INTEGER,
     notes TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -223,7 +225,7 @@ await sql`
 await sql`
   CREATE TABLE IF NOT EXISTS chapters (
     id SERIAL PRIMARY KEY,
-    academic_year_subject_id INTEGER NOT NULL REFERENCES academic_year_subjects(id) ON DELETE CASCADE,
+    subject_id INTEGER NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
     title TEXT NOT NULL,
     description TEXT,
     chapter_order INTEGER NOT NULL DEFAULT 1,

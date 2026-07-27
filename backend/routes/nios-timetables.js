@@ -22,8 +22,7 @@ const SLOT_CHAPTERS_AGG = `COALESCE((
       ORDER BY s.name, ch.chapter_order)
     FROM nios_timetable_slot_chapters sc
     JOIN nios_chapters ch ON ch.id = sc.nios_chapter_id
-    JOIN nios_university_subjects bsx ON bsx.id = ch.nios_university_subject_id
-    JOIN nios_subjects s ON s.id = bsx.nios_subject_id
+    JOIN nios_subjects s ON s.id = ch.nios_subject_id
     WHERE sc.nios_timetable_slot_id = ts.id), '[]') AS chapters`;
 
 // Write a slot's chapter set and keep the legacy singular nios_subject_id in sync
@@ -40,10 +39,7 @@ async function syncSlotChapters(slotId, chapterIds) {
   }
   if (ids.length) {
     const s = await sql`
-      SELECT bs.nios_subject_id
-      FROM nios_chapters ch
-      JOIN nios_university_subjects bs ON bs.id = ch.nios_university_subject_id
-      WHERE ch.id = ${ids[0]}
+      SELECT nios_subject_id FROM nios_chapters WHERE id = ${ids[0]}
     `;
     await sql`UPDATE nios_timetable_slots SET nios_subject_id = ${s[0]?.nios_subject_id || null} WHERE id = ${slotId}`;
   }
@@ -92,13 +88,21 @@ async function syncNiosClassForSlot(slot, timetable, userId) {
     UPDATE nios_class_entries SET nios_chapter_id = (
       SELECT cc.nios_chapter_id FROM nios_class_chapters cc
       JOIN nios_chapters ch ON ch.id = cc.nios_chapter_id
-      JOIN nios_university_subjects bs ON bs.id = ch.nios_university_subject_id
-      JOIN nios_subjects s ON s.id = bs.nios_subject_id
+      JOIN nios_subjects s ON s.id = ch.nios_subject_id
       WHERE cc.nios_class_entry_id = ${created[0].id}
       ORDER BY s.name, ch.chapter_order LIMIT 1
     )
     WHERE id = ${created[0].id}
   `;
+}
+
+// Removing a slot removes the class it created — nios_class_entries.
+// nios_timetable_slot_id is ON DELETE SET NULL, so without this the class row
+// would outlive its slot as an orphan. Call BEFORE deleting the slots.
+async function deleteNiosClassesForSlots(slotIds) {
+  if (!slotIds || slotIds.length === 0) return 0;
+  const gone = await sql`DELETE FROM nios_class_entries WHERE nios_timetable_slot_id = ANY(${slotIds}) RETURNING id`;
+  return gone.length;
 }
 
 async function niosSlotContext(row, timetableId) {
@@ -112,8 +116,7 @@ async function niosSlotContext(row, timetableId) {
     SELECT DISTINCT s.name AS subject_name
     FROM nios_timetable_slot_chapters sc
     JOIN nios_chapters ch ON ch.id = sc.nios_chapter_id
-    JOIN nios_university_subjects bs ON bs.id = ch.nios_university_subject_id
-    JOIN nios_subjects s ON s.id = bs.nios_subject_id
+    JOIN nios_subjects s ON s.id = ch.nios_subject_id
     WHERE sc.nios_timetable_slot_id = ${row.id}
   `;
   return { ...rows[0], subject_names: chapters.map((c) => c.subject_name) };
@@ -213,10 +216,14 @@ router.put('/:id', auth, async (req, res, next) => {
 router.delete('/:id', auth, async (req, res, next) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden.' });
+    // Slots cascade with the timetable, so their classes have to go first.
+    const slotIds = (await sql`SELECT id FROM nios_timetable_slots WHERE nios_timetable_id = ${req.params.id}`).map((s) => s.id);
+    const classesRemoved = await deleteNiosClassesForSlots(slotIds);
     const rows = await sql`DELETE FROM nios_timetables WHERE id = ${req.params.id} RETURNING *`;
     if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
-    await logActivity(req.user.id, req.user.name, req.user.role, 'delete_nios_timetable', 'nios_timetable', rows[0].id, `Deleted NIOS timetable: ${rows[0].name}`);
-    res.json({ message: 'Deleted.' });
+    await logActivity(req.user.id, req.user.name, req.user.role, 'delete_nios_timetable', 'nios_timetable', rows[0].id,
+      `Deleted NIOS timetable: ${rows[0].name}${slotIds.length ? ` (${slotIds.length} slots, ${classesRemoved} linked classes)` : ''}`);
+    res.json({ message: 'Deleted.', slots_removed: slotIds.length, classes_removed: classesRemoved });
   } catch (err) { next(err); }
 });
 
@@ -319,13 +326,15 @@ router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
 
 router.delete('/:id/slots/:slotId', auth, async (req, res, next) => {
   try {
+    const classesRemoved = await deleteNiosClassesForSlots([Number(req.params.slotId)]);
     const rows = await sql`
       DELETE FROM nios_timetable_slots WHERE id = ${req.params.slotId} AND nios_timetable_id = ${req.params.id} RETURNING *
     `;
     if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
     const delCtx = await niosSlotContext(rows[0], req.params.id);
-    await logActivity(req.user.id, req.user.name, req.user.role, 'delete_nios_slot', 'nios_timetable_slot', rows[0].id, `Deleted NIOS slot: ${niosSlotDetail(rows[0], delCtx)}`);
-    res.json({ message: 'Deleted.' });
+    await logActivity(req.user.id, req.user.name, req.user.role, 'delete_nios_slot', 'nios_timetable_slot', rows[0].id,
+      `Deleted NIOS slot${classesRemoved ? ` and ${classesRemoved} linked class${classesRemoved > 1 ? 'es' : ''}` : ''}: ${niosSlotDetail(rows[0], delCtx)}`);
+    res.json({ message: 'Deleted.', classes_removed: classesRemoved });
   } catch (err) { next(err); }
 });
 
