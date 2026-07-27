@@ -13,8 +13,14 @@ const PAGE_SIZE = 50;
 const EMPTY_FILTERS = {
   university_id: '', stream_id: '', batch_id: '', academic_year_id: '', semester_id: '', subject_id: '',
   faculty_id: '', date_from: '', date_to: '',
-  class_status: '',
+  class_status: '', class_mode: '',
 };
+
+// Radix Select has no empty value, so "All" carries a sentinel we map back to ''.
+const ALL = '__all';
+const clean = (v) => (v === ALL ? '' : v);
+
+const MODE_LABELS = { online: 'Live / Online', offline: 'Offline' };
 
 function pct(num, den) {
   if (!den || Number(den) === 0) return null;
@@ -58,7 +64,7 @@ export default function ClassOverviewPage() {
   const [batches, setBatches] = useState([]);
   const [academicYears, setAcademicYears] = useState([]);
   const [semesters, setSemesters] = useState([]);
-  const [yearSubjects, setYearSubjects] = useState([]);
+  const [subjectOptions, setSubjectOptions] = useState([]);
   const [facultyList, setFacultyList] = useState([]);
 
   // Form (pending) state
@@ -78,22 +84,52 @@ export default function ClassOverviewPage() {
         setFacultyList(fRes.data);
       })
       .catch(() => toast.error('Failed to load reference data.'));
+    loadSubjects({});
   }, []);
+
+  // Subjects are always filterable — narrowed to the syllabus of whatever level is
+  // selected, or the full list when nothing is. Both sources are normalised to the
+  // subject id that /classes filters on.
+  async function loadSubjects({ university_id, stream_id, academic_year_id, semester_id }) {
+    try {
+      if (semester_id || academic_year_id) {
+        const q = semester_id ? `semester_id=${semester_id}` : `academic_year_id=${academic_year_id}`;
+        const res = await client.get(`/academic-year-subjects?${q}`);
+        setSubjectOptions(res.data.map(s => ({
+          value: String(s.subject_id),
+          label: `${s.subject_name}${s.subject_code ? ` (${s.subject_code})` : ''}`,
+        })));
+        return;
+      }
+      const q = new URLSearchParams();
+      if (stream_id) q.set('stream_id', stream_id);
+      else if (university_id) q.set('university_id', university_id);
+      const res = await client.get(`/subjects?${q.toString()}`);
+      setSubjectOptions(res.data.map(s => ({
+        value: String(s.id),
+        label: `${s.name}${s.subject_code ? ` (${s.subject_code})` : ''}`,
+      })));
+    } catch { setSubjectOptions([]); }
+  }
 
   // ── Cascade handlers ──────────────────────────────────────────────────────
 
-  async function onUniChange(v) {
+  async function onUniChange(raw) {
+    const v = clean(raw);
     setFilters(f => ({ ...f, university_id: v, stream_id: '', batch_id: '', academic_year_id: '', semester_id: '', subject_id: '' }));
-    setStreams([]); setBatches([]); setAcademicYears([]); setSemesters([]); setYearSubjects([]);
+    setStreams([]); setBatches([]); setAcademicYears([]); setSemesters([]);
+    loadSubjects({ university_id: v });
     if (v) {
       try { const res = await client.get(`/streams?university_id=${v}`); setStreams(res.data); } catch { /**/ }
     }
   }
 
-  async function onStreamChange(v) {
+  async function onStreamChange(raw) {
+    const v = clean(raw);
     const uniId = filters.university_id;
     setFilters(f => ({ ...f, stream_id: v, batch_id: '', academic_year_id: '', semester_id: '', subject_id: '' }));
-    setBatches([]); setAcademicYears([]); setSemesters([]); setYearSubjects([]);
+    setBatches([]); setAcademicYears([]); setSemesters([]);
+    loadSubjects({ university_id: uniId, stream_id: v });
     if (v) {
       try {
         // Academic years are stream-level now, so load them with the batches.
@@ -107,31 +143,31 @@ export default function ClassOverviewPage() {
     }
   }
 
-  function onBatchChange(v) {
-    setFilters(f => ({ ...f, batch_id: v }));
+  function onBatchChange(raw) {
+    setFilters(f => ({ ...f, batch_id: clean(raw) }));
   }
 
-  async function onYearChange(v) {
+  async function onYearChange(raw) {
+    const v = clean(raw);
     setFilters(f => ({ ...f, academic_year_id: v, semester_id: '', subject_id: '' }));
-    setSemesters([]); setYearSubjects([]);
-    if (v) {
-      try {
-        const [semRes, subRes] = await Promise.all([
-          client.get(`/semesters?academic_year_id=${v}`),
-          client.get(`/academic-year-subjects?academic_year_id=${v}`),
-        ]);
-        setSemesters(semRes.data);
-        if (semRes.data.length === 0) setYearSubjects(subRes.data);
-      } catch { /**/ }
+    setSemesters([]);
+    if (!v) {
+      loadSubjects({ university_id: filters.university_id, stream_id: filters.stream_id });
+      return;
     }
+    try {
+      // Semesters are optional per year — the picker only appears when this year
+      // actually has them.
+      const semRes = await client.get(`/semesters?academic_year_id=${v}`);
+      setSemesters(semRes.data);
+    } catch { /**/ }
+    loadSubjects({ academic_year_id: v });
   }
 
-  async function onSemesterChange(v) {
+  async function onSemesterChange(raw) {
+    const v = clean(raw);
     setFilters(f => ({ ...f, semester_id: v, subject_id: '' }));
-    setYearSubjects([]);
-    if (v) {
-      try { const res = await client.get(`/academic-year-subjects?semester_id=${v}`); setYearSubjects(res.data); } catch { /**/ }
-    }
+    loadSubjects(v ? { semester_id: v } : { academic_year_id: filters.academic_year_id });
   }
 
   // ── Query building ────────────────────────────────────────────────────────
@@ -139,7 +175,7 @@ export default function ClassOverviewPage() {
   function buildQueryString(f) {
     const q = new URLSearchParams();
     const simple = ['university_id','stream_id','batch_id','academic_year_id','semester_id','subject_id',
-                     'faculty_id','date_from','date_to','class_status'];
+                     'faculty_id','date_from','date_to','class_status','class_mode'];
     simple.forEach(k => { if (f[k]) q.set(k, f[k]); });
     return q.toString();
   }
@@ -167,7 +203,8 @@ export default function ClassOverviewPage() {
 
   function clearAll() {
     setFilters({ ...EMPTY_FILTERS });
-    setStreams([]); setBatches([]); setAcademicYears([]); setSemesters([]); setYearSubjects([]);
+    setStreams([]); setBatches([]); setAcademicYears([]); setSemesters([]);
+    loadSubjects({});
     setSummary(null); setClasses([]); setHasLoaded(false);
   }
 
@@ -208,6 +245,7 @@ export default function ClassOverviewPage() {
               <Select value={filters.university_id} onValueChange={onUniChange}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value={ALL}>All</SelectItem>
                   {universities.map(u => <SelectItem key={u.id} value={String(u.id)}>{u.name}</SelectItem>)}
                 </SelectContent>
               </Select>
@@ -218,6 +256,7 @@ export default function ClassOverviewPage() {
               <Select value={filters.stream_id} onValueChange={onStreamChange} disabled={!filters.university_id}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value={ALL}>All</SelectItem>
                   {streams.map(s => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
                 </SelectContent>
               </Select>
@@ -228,6 +267,7 @@ export default function ClassOverviewPage() {
               <Select value={filters.batch_id} onValueChange={onBatchChange} disabled={!filters.stream_id}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value={ALL}>All</SelectItem>
                   {batches.map(b => <SelectItem key={b.id} value={String(b.id)}>{b.name}</SelectItem>)}
                 </SelectContent>
               </Select>
@@ -235,53 +275,56 @@ export default function ClassOverviewPage() {
 
             <div className="space-y-1">
               <Label className="text-xs">Academic Year</Label>
-              <Select value={filters.academic_year_id} onValueChange={onYearChange} disabled={!filters.batch_id}>
+              {/* Academic years hang off the stream, so a batch isn't needed here. */}
+              <Select value={filters.academic_year_id} onValueChange={onYearChange} disabled={!filters.stream_id}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value={ALL}>All</SelectItem>
                   {academicYears.map(y => <SelectItem key={y.id} value={String(y.id)}>{y.name}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
 
+            {/* Only years that actually have semesters get a semester picker. */}
             {semesters.length > 0 && (
               <div className="space-y-1">
                 <Label className="text-xs">Semester</Label>
                 <Select value={filters.semester_id} onValueChange={onSemesterChange}>
                   <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
                   <SelectContent>
+                    <SelectItem value={ALL}>All</SelectItem>
                     {semesters.map(s => <SelectItem key={s.id} value={String(s.id)}>{s.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>
             )}
 
-            {yearSubjects.length > 0 && (
-              <div className="space-y-1">
-                <Label className="text-xs">Subject</Label>
-                <Select
-                  value={filters.subject_id}
-                  onValueChange={v => setFilters(f => ({ ...f, subject_id: v }))}
-                >
-                  <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
-                  <SelectContent>
-                    {yearSubjects.map(s => (
-                      <SelectItem key={s.id} value={String(s.subject_id)}>
-                        {s.subject_name}{s.subject_code ? ` (${s.subject_code})` : ''}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
+            <div className="space-y-1">
+              <Label className="text-xs">Subject</Label>
+              <Select
+                value={filters.subject_id}
+                onValueChange={v => setFilters(f => ({ ...f, subject_id: clean(v) }))}
+                disabled={subjectOptions.length === 0}
+              >
+                <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL}>All</SelectItem>
+                  {subjectOptions.map(s => (
+                    <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
           {/* Row 2: detail filters */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             <div className="space-y-1">
               <Label className="text-xs">Faculty</Label>
-              <Select value={filters.faculty_id} onValueChange={v => setFilters(f => ({ ...f, faculty_id: v }))}>
+              <Select value={filters.faculty_id} onValueChange={v => setFilters(f => ({ ...f, faculty_id: clean(v) }))}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value={ALL}>All</SelectItem>
                   {facultyList.map(fc => <SelectItem key={fc.id} value={String(fc.id)}>{fc.name}</SelectItem>)}
                 </SelectContent>
               </Select>
@@ -299,9 +342,10 @@ export default function ClassOverviewPage() {
 
             <div className="space-y-1">
               <Label className="text-xs">Class Status</Label>
-              <Select value={filters.class_status} onValueChange={v => setFilters(f => ({ ...f, class_status: v }))}>
+              <Select value={filters.class_status} onValueChange={v => setFilters(f => ({ ...f, class_status: clean(v) }))}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
                 <SelectContent>
+                  <SelectItem value={ALL}>All</SelectItem>
                   <SelectItem value="taken">Taken</SelectItem>
                   <SelectItem value="not_taken">Not Taken</SelectItem>
                   <SelectItem value="scheduled">Scheduled</SelectItem>
@@ -309,7 +353,17 @@ export default function ClassOverviewPage() {
               </Select>
             </div>
 
-
+            <div className="space-y-1">
+              <Label className="text-xs">Mode</Label>
+              <Select value={filters.class_mode} onValueChange={v => setFilters(f => ({ ...f, class_mode: clean(v) }))}>
+                <SelectTrigger className="w-full"><SelectValue placeholder="All" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ALL}>All</SelectItem>
+                  <SelectItem value="online">Live / Online</SelectItem>
+                  <SelectItem value="offline">Offline</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
           <div className="flex items-center gap-2 pt-1">
@@ -380,6 +434,7 @@ export default function ClassOverviewPage() {
                         <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Subject</TableHead>
                         <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">University / Batch</TableHead>
                         <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Hrs</TableHead>
+                        <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Mode</TableHead>
                         <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Status</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -396,6 +451,7 @@ export default function ClassOverviewPage() {
                             </div>
                           </TableCell>
                           <TableCell className="text-sm">{cls.total_hours ?? '—'}</TableCell>
+                          <TableCell className="text-sm whitespace-nowrap">{MODE_LABELS[cls.class_mode] || '—'}</TableCell>
                           <TableCell>
                             <span className={`inline-block text-xs font-medium px-2 py-0.5 rounded-full ${STATUS_STYLES[cls.class_status] || 'bg-slate-100 text-slate-600'}`}>
                               {STATUS_LABELS[cls.class_status] || cls.class_status || '—'}
