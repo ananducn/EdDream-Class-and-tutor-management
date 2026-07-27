@@ -11,6 +11,7 @@ import StatusBadge from '@/components/StatusBadge';
 import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
+import { to12h } from '@/lib/time';
 import { SkeletonCards } from '@/components/Skeletons';
 import {
   DropdownMenu,
@@ -1048,7 +1049,7 @@ function SlotCard({ slot, onEdit, onSetStatus, onDelete }) {
 
       {(slot.start_time || slot.end_time) && (
         <p className="text-xs text-slate-400 dark:text-slate-500">
-          {slot.start_time?.slice(0, 5)} – {slot.end_time?.slice(0, 5)}
+          {to12h(slot.start_time?.slice(0, 5))} – {to12h(slot.end_time?.slice(0, 5))}
         </p>
       )}
       {slot.shared_batches?.length > 0 && (

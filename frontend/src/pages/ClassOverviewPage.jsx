@@ -7,6 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import client from '@/api/client';
+import { defaultDateRange, describeDateRange } from '@/lib/dateRange';
 
 const PAGE_SIZE = 50;
 
@@ -67,8 +68,8 @@ export default function ClassOverviewPage() {
   const [subjectOptions, setSubjectOptions] = useState([]);
   const [facultyList, setFacultyList] = useState([]);
 
-  // Form (pending) state
-  const [filters, setFilters] = useState({ ...EMPTY_FILTERS });
+  // Form (pending) state — starts on the last three months rather than "all time".
+  const [filters, setFilters] = useState({ ...EMPTY_FILTERS, ...defaultDateRange() });
 
   // Result state
   const [summary, setSummary] = useState(null);
@@ -76,6 +77,8 @@ export default function ClassOverviewPage() {
   const [loading, setLoading] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [page, setPage] = useState(1);
+  // The date range actually loaded, shown under the filters.
+  const [appliedRange, setAppliedRange] = useState({ from: '', to: '' });
 
   useEffect(() => {
     Promise.all([client.get('/universities'), client.get('/faculty')])
@@ -185,6 +188,8 @@ export default function ClassOverviewPage() {
   async function applyFilters() {
     setLoading(true);
     setPage(1);
+    // Remember what was actually fetched so the summary line can't drift from it.
+    setAppliedRange({ from: filters.date_from || '', to: filters.date_to || '' });
     try {
       const q = buildQueryString(filters);
       const [sumRes, classRes] = await Promise.all([
@@ -202,7 +207,8 @@ export default function ClassOverviewPage() {
   }
 
   function clearAll() {
-    setFilters({ ...EMPTY_FILTERS });
+    // Clear returns to the default window, not to an unbounded "everything".
+    setFilters({ ...EMPTY_FILTERS, ...defaultDateRange() });
     setStreams([]); setBatches([]); setAcademicYears([]); setSemesters([]);
     loadSubjects({});
     setSummary(null); setClasses([]); setHasLoaded(false);
@@ -366,6 +372,11 @@ export default function ClassOverviewPage() {
             </div>
           </div>
 
+          <p className="text-xs text-slate-500 dark:text-slate-400 pt-1">
+            {hasLoaded
+              ? `${describeDateRange(appliedRange.from, appliedRange.to)} Change the dates to see other periods.`
+              : `${describeDateRange(filters.date_from, filters.date_to)} Click Apply to load.`}
+          </p>
           <div className="flex items-center gap-2 pt-1">
             <Button onClick={applyFilters} disabled={loading}>
               {loading ? 'Loading…' : 'Apply'}
