@@ -2,7 +2,7 @@ import express from 'express';
 import { sql } from '../db.js';
 import { auth } from '../middleware/auth.js';
 import { logActivity } from '../middleware/logger.js';
-import { DAYS, dateForSlot } from '../lib/week.js';
+import { DAYS, dateForSlot, nowInZone } from '../lib/week.js';
 
 const router = express.Router();
 
@@ -278,10 +278,8 @@ router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
       if (existing[0] && tt[0]?.week_start_date) {
         const slotDate = dateForSlot(tt[0].week_start_date, existing[0].day_of_week);
         const slotTime = (existing[0].start_time || '00:00').slice(0, 5);
-        const nowISO = new Date().toISOString();
-        const todayUTC = nowISO.slice(0, 10);
-        const nowTimeUTC = nowISO.slice(11, 16);
-        if (slotDate > todayUTC || (slotDate === todayUTC && slotTime > nowTimeUTC)) {
+        const now = nowInZone();
+        if (slotDate > now.date || (slotDate === now.date && slotTime > now.time)) {
           return res.status(409).json({ error: `This class is scheduled for ${slotDate} at ${slotTime}. It can only be marked as taken after that time.` });
         }
       }

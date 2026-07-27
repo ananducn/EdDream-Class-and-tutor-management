@@ -2,6 +2,7 @@ import express from 'express';
 import { sql } from '../db.js';
 import { auth } from '../middleware/auth.js';
 import { logActivity } from '../middleware/logger.js';
+import { nowInZone } from '../lib/week.js';
 
 const router = express.Router();
 
@@ -223,10 +224,8 @@ router.put('/:id', auth, async (req, res, next) => {
     const status = class_status || 'scheduled';
     if (status === 'taken') {
       const classTime = (start_time || '00:00').slice(0, 5);
-      const nowISO = new Date().toISOString();
-      const todayUTC = nowISO.slice(0, 10);
-      const nowTimeUTC = nowISO.slice(11, 16);
-      if (date > todayUTC || (date === todayUTC && classTime > nowTimeUTC)) {
+      const now = nowInZone();
+      if (date > now.date || (date === now.date && classTime > now.time)) {
         return res.status(409).json({ error: `This class is scheduled for ${date} at ${classTime}. It can only be marked as taken after that time.` });
       }
     }
