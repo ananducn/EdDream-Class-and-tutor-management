@@ -1,6 +1,7 @@
 import express from 'express';
 import { sql } from '../db.js';
 import { auth } from '../middleware/auth.js';
+import { cacheRoute } from '../middleware/cache.js';
 import { logActivity } from '../middleware/logger.js';
 
 const router = express.Router();
@@ -16,7 +17,7 @@ async function getFacultyWithLinks(id) {
   return { ...faculty[0], subjects, universities, batches };
 }
 
-router.get('/', auth, async (req, res) => {
+router.get('/', auth, cacheRoute(60000), async (req, res) => {
   const facultyList = await sql`SELECT * FROM faculty ORDER BY name`;
   const results = await Promise.all(facultyList.map((f) => getFacultyWithLinks(f.id)));
   res.json(results.filter(Boolean));
@@ -31,11 +32,12 @@ router.get('/:id', auth, async (req, res) => {
 router.post('/', auth, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden.' });
   const { name, email, phone, payment_type, hourly_rate, subject_ids = [], university_ids = [], batch_ids = [] } = req.body;
-  if (!name) return res.status(400).json({ error: 'Name is required.' });
+  if (!name?.trim()) return res.status(400).json({ error: 'Name is required.' });
+  if (!phone?.trim()) return res.status(400).json({ error: 'Mobile number is required.' });
 
   const rows = await sql`
     INSERT INTO faculty (name, email, phone, payment_type, hourly_rate)
-    VALUES (${name}, ${email || null}, ${phone || null}, ${payment_type || null}, ${hourly_rate || null})
+    VALUES (${name.trim()}, ${email || null}, ${phone.trim()}, ${payment_type || null}, ${hourly_rate || null})
     RETURNING *
   `;
   const facultyId = rows[0].id;
@@ -70,10 +72,11 @@ router.post('/', auth, async (req, res) => {
 router.put('/:id', auth, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden.' });
   const { name, email, phone, payment_type, hourly_rate, subject_ids = [], university_ids = [], batch_ids = [] } = req.body;
-  if (!name) return res.status(400).json({ error: 'Name is required.' });
+  if (!name?.trim()) return res.status(400).json({ error: 'Name is required.' });
+  if (!phone?.trim()) return res.status(400).json({ error: 'Mobile number is required.' });
 
   const rows = await sql`
-    UPDATE faculty SET name = ${name}, email = ${email || null}, phone = ${phone || null},
+    UPDATE faculty SET name = ${name.trim()}, email = ${email || null}, phone = ${phone.trim()},
       payment_type = ${payment_type || null}, hourly_rate = ${hourly_rate || null}
     WHERE id = ${req.params.id} RETURNING *
   `;

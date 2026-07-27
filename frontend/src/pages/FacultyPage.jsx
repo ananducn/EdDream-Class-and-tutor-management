@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import StatusBadge from '@/components/StatusBadge';
 import client from '@/api/client';
+import { SkeletonTable } from '@/components/Skeletons';
 
 const emptyForm = {
   name: '', email: '', phone: '', payment_type: '', hourly_rate: '',
@@ -51,8 +52,10 @@ export default function FacultyPage() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   async function load() {
+    setLoading(true);
     try {
       const [fRes, sRes, uRes, bRes] = await Promise.all([
         client.get('/faculty'),
@@ -66,6 +69,8 @@ export default function FacultyPage() {
       setBatches(bRes.data);
     } catch {
       toast.error('Failed to load data.');
+    } finally {
+      setLoading(false);
     }
   }
 
@@ -94,10 +99,19 @@ export default function FacultyPage() {
 
   async function handleSubmit(e) {
     e.preventDefault();
+    // Name and mobile number are mandatory — `required` covers empty fields, this
+    // also rejects whitespace-only input.
+    const name = form.name.trim();
+    const phone = form.phone.trim();
+    if (!name) return toast.error('Name is required.');
+    if (!phone) return toast.error('Mobile number is required.');
+
     setSaving(true);
     try {
       const payload = {
         ...form,
+        name,
+        phone,
         hourly_rate: form.hourly_rate ? Number(form.hourly_rate) : null,
       };
       if (editing) {
@@ -154,12 +168,13 @@ export default function FacultyPage() {
           <Button size="sm" onClick={openAdd}>Add Faculty</Button>
         </CardHeader>
         <CardContent>
+          {loading ? <SkeletonTable rows={5} cols={6} /> : (
           <Table>
             <TableHeader>
               <TableRow>
                 <TableHead className={TH}>Name</TableHead>
                 <TableHead className={TH}>Email</TableHead>
-                <TableHead className={TH}>Phone</TableHead>
+                <TableHead className={TH}>Mobile Number</TableHead>
                 <TableHead className={TH}>Payment Type</TableHead>
                 <TableHead className={TH}>Status</TableHead>
                 <TableHead className={`${TH} text-right`}>Actions</TableHead>
@@ -192,6 +207,7 @@ export default function FacultyPage() {
               ))}
             </TableBody>
           </Table>
+          )}
         </CardContent>
       </Card>
 
@@ -212,8 +228,8 @@ export default function FacultyPage() {
                 <Input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
               </div>
               <div className="space-y-1">
-                <Label>Phone</Label>
-                <Input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
+                <Label>Mobile Number *</Label>
+                <Input type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} required />
               </div>
               <div className="space-y-1">
                 <Label>Payment Type</Label>
