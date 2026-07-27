@@ -19,6 +19,14 @@ function StatCard({ label, value, highlight }) {
   );
 }
 
+// Panels are fixed-height so the dashboard keeps a stable layout no matter how
+// much data lands in them; anything longer scrolls inside its own card. Card is
+// already `flex flex-col`, so the header stays put and the content flexes —
+// min-h-0 is what lets that content shrink below its natural height and scroll.
+const PANEL = 'h-96 flex flex-col';
+const PANEL_SM = 'h-80 flex flex-col';
+const PANEL_BODY = 'flex-1 min-h-0 overflow-y-auto';
+
 function timeAgo(dateStr) {
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);
@@ -58,19 +66,20 @@ export default function DashboardPage() {
       </div>
 
       {/* Faculty Hours */}
-      <Card>
+      <Card className={PANEL}>
         <CardHeader>
           <CardTitle className="text-base text-slate-900 dark:text-slate-100">Faculty Hours — This Month</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className={PANEL_BODY}>
           {!data?.faculty_hours?.length ? (
             <p className="text-sm text-slate-500 dark:text-slate-400">No classes recorded this month yet.</p>
           ) : (
             <Table>
+              {/* Header stays visible while the rows scroll under it. */}
               <TableHeader>
                 <TableRow>
-                  <TableHead className="text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Faculty</TableHead>
-                  <TableHead className="text-right text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Total Hours</TableHead>
+                  <TableHead className="sticky top-0 z-10 bg-card text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Faculty</TableHead>
+                  <TableHead className="sticky top-0 z-10 bg-card text-right text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Total Hours</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -88,11 +97,11 @@ export default function DashboardPage() {
 
       {/* Pending Uploads + Recent Activity */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card>
+        <Card className={PANEL_SM}>
           <CardHeader>
             <CardTitle className="text-base text-slate-900 dark:text-slate-100">Pending Uploads</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3">
+          <CardContent className={`${PANEL_BODY} space-y-3`}>
             <p className="text-3xl font-bold text-slate-900 dark:text-slate-100">{data?.pending_uploads ?? 0}</p>
             <p className="text-sm text-slate-500 dark:text-slate-400">
               Chapters that are recorded but not uploaded to any destination yet.
@@ -104,11 +113,11 @@ export default function DashboardPage() {
         </Card>
 
         {isAdmin() && (
-          <Card>
+          <Card className={PANEL_SM}>
             <CardHeader>
               <CardTitle className="text-base text-slate-900 dark:text-slate-100">Recent Activity</CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className={PANEL_BODY}>
               {!data?.recent_activity?.length ? (
                 <p className="text-sm text-slate-500 dark:text-slate-400">No activity yet.</p>
               ) : (
