@@ -1,18 +1,24 @@
 import 'dotenv/config';
 import { sql, pool } from './db.js';
+import { mondayOf, dayNameOf } from './lib/week.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Sample data for the shared-syllabus / chapter-recording model.
 //
-// Shape of the world it builds:
-//   • IGNOU university with two streams (B.Com with semesters, BA English with
-//     direct subjects) — the syllabus is defined ONCE per stream.
-//   • Several batches per stream that all inherit that one syllabus.
-//   • Chapter recordings marked on the shared chapters (partial progress, with
-//     YouTube / Drive links) — every batch sees them.
-//   • A handful of scheduled/taken class sessions.
-//   • The NIOS side mirrored: subjects + chapters under each NIOS university,
-//     recordings, batches, and a couple of classes.
+// Built to exercise every filter and report in the app, so it deliberately
+// spreads data across the full range of each dimension:
+//   • Two universities. Streams both WITH semesters (B.Com, BBA) and WITHOUT
+//     (BA English, M.Com), so the "semester picker only when the year has
+//     semesters" behaviour is testable both ways.
+//   • Syllabus defined ONCE per stream; several batches per stream inherit it.
+//   • Chapter recordings in every state: uploaded to each destination, recorded
+//     but NOT uploaded (the "Pending Upload" stat), flagged not-recorded, and
+//     no recording row at all.
+//   • Hundreds of class sessions covering both class modes (online AND offline)
+//     and all three statuses (taken / not_taken / scheduled), across many
+//     faculty, subjects, batches, years and semesters, over a ~4 month window.
+//   • Weekly timetables with slots for the current week.
+//   • The NIOS side mirrored with the same variety.
 //
 // Safe to re-run: it wipes the sample tables first (NIOS universities are kept —
 // the server re-seeds those on boot). Pass nothing; just `node seed-sample.js`.
@@ -24,6 +30,9 @@ if (!admin) {
   process.exit(1);
 }
 const ADMIN = admin.id;
+
+// "Today" for deciding which classes are already taken vs still scheduled.
+const TODAY = new Date().toISOString().slice(0, 10);
 
 console.log('Clearing existing sample data…');
 await sql`TRUNCATE
@@ -39,6 +48,26 @@ await sql`TRUNCATE
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 const one = async (rows) => rows[0];
+
+// Deterministic pseudo-random so re-runs produce the same data set.
+let _seed = 42;
+function rnd() {
+  _seed = (_seed * 1103515245 + 12345) % 2147483648;
+  return _seed / 2147483648;
+}
+const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
+
+function addDays(dateStr, n) {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+function hours(start, end) {
+  const [sh, sm] = start.split(':').map(Number);
+  const [eh, em] = end.split(':').map(Number);
+  return ((eh * 60 + em - sh * 60 - sm) / 60).toFixed(2);
+}
 
 async function addFaculty(name, email, phone, payType, rate) {
   return one(await sql`
@@ -80,26 +109,16 @@ async function assignSubject(yearId, subjectId, semesterId) {
     ON CONFLICT (academic_year_id, subject_id) DO NOTHING RETURNING *`);
 }
 
-async function addChapter(aysId, title, order) {
+async function addChapter(subjectId, title, order) {
   return one(await sql`
-    INSERT INTO chapters (academic_year_subject_id, title, chapter_order, created_by)
-    VALUES (${aysId}, ${title}, ${order}, ${ADMIN}) RETURNING *`);
+    INSERT INTO chapters (subject_id, title, chapter_order, created_by)
+    VALUES (${subjectId}, ${title}, ${order}, ${ADMIN}) RETURNING *`);
 }
 
-// rec: { fac, date, dur, yt, gd, edited } — marks the shared chapter recorded
-async function recordChapter(chapterId, rec) {
+async function addResource(chapterId, type, title, url) {
   await sql`
-    INSERT INTO chapter_recordings (
-      chapter_id, is_recorded, faculty_id, recording_date, recording_duration,
-      editing_status, backup_available,
-      upload_youtube, upload_youtube_link, youtube_privacy,
-      upload_gdrive, upload_gdrive_link, created_by
-    ) VALUES (
-      ${chapterId}, true, ${rec.fac || null}, ${rec.date || null}, ${rec.dur || null},
-      ${rec.edited ? 'edited' : 'not_edited'}, true,
-      ${!!rec.yt}, ${rec.yt || null}, ${rec.yt ? 'unlisted' : null},
-      ${!!rec.gd}, ${rec.gd || null}, ${ADMIN}
-    )`;
+    INSERT INTO learning_resources (chapter_id, type, title, url, created_by)
+    VALUES (${chapterId}, ${type}, ${title}, ${url}, ${ADMIN})`;
 }
 
 async function addBatch(name, universityId, streamId) {
@@ -108,208 +127,332 @@ async function addBatch(name, universityId, streamId) {
     VALUES (${name}, ${universityId}, ${streamId}) RETURNING *`);
 }
 
-function hours(start, end) {
-  const [sh, sm] = start.split(':').map(Number);
-  const [eh, em] = end.split(':').map(Number);
-  return ((eh * 60 + em - sh * 60 - sm) / 60).toFixed(2);
-}
-
 async function addClass(c) {
   return one(await sql`
     INSERT INTO class_entries (
       date, start_time, end_time, total_hours, faculty_id, subject_id, university_id,
       batch_id, stream_id, academic_year_id, semester_id, chapter_id,
-      class_mode, platform_used, class_status, payment_status, created_by
+      class_mode, platform_used, class_status, payment_status, notes, created_by
     ) VALUES (
       ${c.date}, ${c.start}, ${c.end}, ${hours(c.start, c.end)}, ${c.fac}, ${c.subject},
-      ${c.university}, ${c.batch}, ${c.stream}, ${c.year}, ${c.sem || null}, ${c.chapter},
-      ${c.mode}, ${c.platform || null}, ${c.status}, ${c.payment || 'pending'}, ${ADMIN}
+      ${c.university}, ${c.batch}, ${c.stream}, ${c.year}, ${c.sem || null}, ${c.chapter || null},
+      ${c.mode}, ${c.platform || null}, ${c.status}, ${c.payment || 'pending'}, ${c.notes || null}, ${ADMIN}
     ) RETURNING *`);
+}
+
+// ── recording states ─────────────────────────────────────────────────────────
+// Every chapter gets one of these, cycled, so each page has a healthy mix:
+//   full     — recorded, edited, on YouTube + Drive + student app
+//   yt       — recorded, YouTube only
+//   gd       — recorded, Google Drive only
+//   app      — recorded, student app only
+//   hdd      — recorded, local hard disk only (no link, a location label)
+//   pending  — recorded but on NO destination  → "Pending Upload"
+//   flagged  — a recording row that says NOT recorded (edge case)
+//   none     — no recording row at all
+const REC_STATES = ['full', 'yt', 'gd', 'app', 'hdd', 'pending', 'none', 'yt', 'full', 'none', 'flagged', 'pending'];
+
+async function recordChapter(chapterId, state, { fac, slug, date, dur }) {
+  if (state === 'none') return;
+  const base = {
+    is_recorded: state !== 'flagged',
+    faculty_id: fac,
+    recording_date: date,
+    file: `${slug}.mp4`,
+    dur,
+    edited: ['full', 'gd'].includes(state),
+    yt: ['full', 'yt'].includes(state) ? `https://youtu.be/${slug}` : null,
+    gd: ['full', 'gd'].includes(state) ? `https://drive.google.com/file/d/${slug}/view` : null,
+    app: ['full', 'app'].includes(state) ? `https://app.eddream.in/lesson/${slug}` : null,
+    hdd: state === 'hdd' ? 'Studio HDD-02 / 2026 / Q3' : null,
+  };
+  await sql`
+    INSERT INTO chapter_recordings (
+      chapter_id, is_recorded, faculty_id, recording_date, recording_file_name,
+      recording_duration, notes, editing_status, backup_available, storage_location,
+      upload_youtube, upload_youtube_link, youtube_privacy,
+      upload_gdrive, upload_gdrive_link,
+      upload_student_app, upload_student_app_link,
+      upload_harddisk, upload_harddisk_location, created_by
+    ) VALUES (
+      ${chapterId}, ${base.is_recorded}, ${base.faculty_id}, ${base.recording_date}, ${base.file},
+      ${base.dur}, ${state === 'pending' ? 'Awaiting upload — needs an intro cut.' : null},
+      ${base.edited ? 'edited' : 'not_edited'}, ${state === 'full'}, ${'Studio NAS / ' + slug},
+      ${!!base.yt}, ${base.yt}, ${base.yt ? 'unlisted' : null},
+      ${!!base.gd}, ${base.gd},
+      ${!!base.app}, ${base.app},
+      ${!!base.hdd}, ${base.hdd}, ${ADMIN}
+    )`;
 }
 
 // ── faculty ──────────────────────────────────────────────────────────────────
 
 console.log('Seeding faculty…');
-const facAnjali = await addFaculty('Dr. Anjali Menon', 'anjali.menon@eddream.in', '98470-11111', 'hourly', 1200);
-const facRajesh = await addFaculty('Prof. Rajesh Kumar', 'rajesh.kumar@eddream.in', '98470-22222', 'hourly', 1000);
-const facSneha  = await addFaculty('Ms. Sneha Pillai', 'sneha.pillai@eddream.in', '98470-33333', 'fixed', null);
-const facVinod  = await addFaculty('Mr. Vinod Nair', 'vinod.nair@eddream.in', '98470-44444', 'hourly', 900);
-
-// ── IGNOU ────────────────────────────────────────────────────────────────────
-
-console.log('Seeding IGNOU university, streams & shared syllabus…');
-const ignou = await addUniversity('IGNOU', 'IGNOU');
-
-// Chapter definitions per subject. `rec` (optional) marks it recorded.
-// Only some chapters are recorded — realistic partial progress.
-const bcomSubjects = {
-  'Financial Accounting': {
-    code: 'BCOM-101', fac: facAnjali.id,
-    chapters: [
-      { t: 'Introduction to Accounting', rec: { dur: '1h 15m', edited: true, yt: 'https://youtu.be/fa-ch1', gd: 'https://drive.google.com/fa-ch1' } },
-      { t: 'Journal & Ledger',            rec: { dur: '1h 30m', edited: true, yt: 'https://youtu.be/fa-ch2', gd: 'https://drive.google.com/fa-ch2' } },
-      { t: 'Trial Balance',               rec: { dur: '55m', yt: 'https://youtu.be/fa-ch3' } },
-      { t: 'Final Accounts' },
-      { t: 'Depreciation Accounting' },
-    ],
-  },
-  'Business Organisation & Management': {
-    code: 'BCOM-102', fac: facVinod.id,
-    chapters: [
-      { t: 'Nature & Scope of Business', rec: { dur: '1h', yt: 'https://youtu.be/bom-ch1' } },
-      { t: 'Forms of Business Organisation', rec: { dur: '1h 10m', edited: true, yt: 'https://youtu.be/bom-ch2', gd: 'https://drive.google.com/bom-ch2' } },
-      { t: 'Functions of Management' },
-      { t: 'Organising & Staffing' },
-    ],
-  },
-  'Business Economics': {
-    code: 'BCOM-103', fac: facRajesh.id,
-    chapters: [
-      { t: 'Demand & Supply', rec: { dur: '1h 20m', edited: true, yt: 'https://youtu.be/be-ch1', gd: 'https://drive.google.com/be-ch1' } },
-      { t: 'Elasticity of Demand', rec: { dur: '1h', yt: 'https://youtu.be/be-ch2' } },
-      { t: 'Theory of Production' },
-      { t: 'Market Structures' },
-    ],
-  },
-  'Business Mathematics': {
-    code: 'BCOM-104', fac: facRajesh.id,
-    chapters: [
-      { t: 'Ratio & Proportion', rec: { dur: '50m', yt: 'https://youtu.be/bm-ch1' } },
-      { t: 'Matrices & Determinants' },
-      { t: 'Differentiation' },
-      { t: 'Interest & Annuities' },
-    ],
-  },
-  'Corporate Accounting': {
-    code: 'BCOM-201', fac: facAnjali.id,
-    chapters: [
-      { t: 'Issue of Shares', rec: { dur: '1h 25m', edited: true, yt: 'https://youtu.be/ca-ch1', gd: 'https://drive.google.com/ca-ch1' } },
-      { t: 'Issue of Debentures', rec: { dur: '1h 05m', yt: 'https://youtu.be/ca-ch2' } },
-      { t: 'Company Final Accounts' },
-      { t: 'Amalgamation & Absorption' },
-    ],
-  },
-  'Cost Accounting': {
-    code: 'BCOM-202', fac: facAnjali.id,
-    chapters: [
-      { t: 'Introduction to Costing', rec: { dur: '1h', yt: 'https://youtu.be/cost-ch1' } },
-      { t: 'Material Cost' },
-      { t: 'Labour Cost' },
-      { t: 'Overheads' },
-    ],
-  },
-};
-
-const baSubjects = {
-  'British Poetry': {
-    code: 'BAEG-101', fac: facSneha.id,
-    chapters: [
-      { t: 'The Elizabethan Age', rec: { dur: '1h', edited: true, yt: 'https://youtu.be/bp-ch1', gd: 'https://drive.google.com/bp-ch1' } },
-      { t: 'The Metaphysical Poets', rec: { dur: '55m', yt: 'https://youtu.be/bp-ch2' } },
-      { t: 'Romantic Poetry' },
-      { t: 'Victorian Poetry' },
-    ],
-  },
-  'Indian Writing in English': {
-    code: 'BAEG-102', fac: facSneha.id,
-    chapters: [
-      { t: 'Introduction to Indian Writing', rec: { dur: '45m', yt: 'https://youtu.be/iwe-ch1' } },
-      { t: 'Poetry: Tagore & Naidu' },
-      { t: 'The Indian Novel' },
-      { t: 'Post-colonial Themes' },
-    ],
-  },
-  'Literary Criticism': {
-    code: 'BAEG-201', fac: facSneha.id,
-    chapters: [
-      { t: 'Classical Criticism' },
-      { t: 'Practical Criticism' },
-      { t: 'Modern Literary Theories' },
-    ],
-  },
-};
-
-// Remember chapter ids so we can attach class sessions later.
-const chapterId = {}; // key: `${subjectName}|${chapterTitle}`
-const subjectId = {}; // key: subjectName
-
-async function buildSubjectChapters(aysId, subjectName, def) {
-  let n = 1;
-  for (const ch of def.chapters) {
-    const c = await addChapter(aysId, ch.t, n++);
-    chapterId[`${subjectName}|${ch.t}`] = c.id;
-    if (ch.rec) await recordChapter(c.id, { fac: def.fac, date: '2026-06-20', ...ch.rec });
-  }
-}
-
-// ---- B.Com stream (with semesters) ----
-const bcom = await addStream('B.Com', ignou.id);
-for (const [name, def] of Object.entries(bcomSubjects)) {
-  subjectId[name] = (await addSubject(name, def.code, ignou.id, bcom.id)).id;
-}
-const bcomYear1 = await addYear(bcom.id, 'First Year', 1);
-const bcomYear2 = await addYear(bcom.id, 'Second Year', 2);
-const bcomS1 = await addSemester(bcomYear1.id, 'Semester 1', 1);
-const bcomS2 = await addSemester(bcomYear1.id, 'Semester 2', 2);
-const bcomS3 = await addSemester(bcomYear2.id, 'Semester 3', 3);
-
-const bcomLayout = [
-  { year: bcomYear1, sem: bcomS1, subjects: ['Financial Accounting', 'Business Organisation & Management'] },
-  { year: bcomYear1, sem: bcomS2, subjects: ['Business Economics', 'Business Mathematics'] },
-  { year: bcomYear2, sem: bcomS3, subjects: ['Corporate Accounting', 'Cost Accounting'] },
+const FACULTY = [
+  ['Dr. Anjali Menon',     'anjali.menon@eddream.in',    '9847011111', 'hourly', 1200],
+  ['Prof. Rajesh Kumar',   'rajesh.kumar@eddream.in',    '9847022222', 'hourly', 1000],
+  ['Ms. Sneha Pillai',     'sneha.pillai@eddream.in',    '9847033333', 'fixed',  null],
+  ['Mr. Vinod Nair',       'vinod.nair@eddream.in',      '9847044444', 'hourly', 900],
+  ['Dr. Fathima Rasheed',  'fathima.rasheed@eddream.in', '9847055555', 'hourly', 1350],
+  ['Prof. George Mathew',  'george.mathew@eddream.in',   '9847066666', 'fixed',  null],
+  ['Ms. Divya Krishnan',   'divya.krishnan@eddream.in',  '9847077777', 'hourly', 950],
+  ['Mr. Arun Prakash',     'arun.prakash@eddream.in',    '9847088888', 'hourly', 1100],
+  ['Dr. Meera Suresh',     'meera.suresh@eddream.in',    '9847099999', 'hourly', 1250],
+  ['Mr. Tom Sebastian',    'tom.sebastian@eddream.in',   '9847010101', 'fixed',  null],
 ];
-const aysBcom = {}; // key: subjectName -> ays id
-for (const row of bcomLayout) {
-  for (const sname of row.subjects) {
-    const ays = await assignSubject(row.year.id, subjectId[sname], row.sem.id);
-    aysBcom[sname] = ays.id;
-    await buildSubjectChapters(ays.id, sname, bcomSubjects[sname]);
-  }
+const fac = {};
+for (const [name, email, phone, type, rate] of FACULTY) {
+  const row = await addFaculty(name, email, phone, type, rate);
+  fac[name.split(' ').slice(-1)[0]] = row.id; // key by surname
 }
 
-// ---- BA English stream (direct subjects, no semesters) ----
-const baeng = await addStream('BA English', ignou.id);
-for (const [name, def] of Object.entries(baSubjects)) {
-  subjectId[name] = (await addSubject(name, def.code, ignou.id, baeng.id)).id;
-}
-const baYear1 = await addYear(baeng.id, 'First Year', 1);
-const baYear2 = await addYear(baeng.id, 'Second Year', 2);
-const baLayout = [
-  { year: baYear1, subjects: ['British Poetry', 'Indian Writing in English'] },
-  { year: baYear2, subjects: ['Literary Criticism'] },
+// ── syllabus definitions ─────────────────────────────────────────────────────
+// A stream is: subjects (each with chapters), years, optional semesters, and a
+// layout placing subjects into year/semester.
+
+const chapters = (...titles) => titles;
+
+const STREAMS = [
+  {
+    university: 'IGNOU', name: 'B.Com', semesters: true,
+    years: [
+      { name: 'First Year',  order: 1, sems: ['Semester 1', 'Semester 2'] },
+      { name: 'Second Year', order: 2, sems: ['Semester 3', 'Semester 4'] },
+      { name: 'Third Year',  order: 3, sems: ['Semester 5', 'Semester 6'] },
+    ],
+    subjects: [
+      { name: 'Financial Accounting', code: 'BCOM-101', fac: 'Menon', year: 'First Year', sem: 'Semester 1',
+        chapters: chapters('Introduction to Accounting', 'Journal & Ledger', 'Trial Balance', 'Final Accounts', 'Depreciation Accounting') },
+      { name: 'Business Organisation & Management', code: 'BCOM-102', fac: 'Nair', year: 'First Year', sem: 'Semester 1',
+        chapters: chapters('Nature & Scope of Business', 'Forms of Business Organisation', 'Functions of Management', 'Organising & Staffing') },
+      { name: 'Business Economics', code: 'BCOM-103', fac: 'Kumar', year: 'First Year', sem: 'Semester 2',
+        chapters: chapters('Demand & Supply', 'Elasticity of Demand', 'Theory of Production', 'Market Structures', 'National Income') },
+      { name: 'Business Mathematics', code: 'BCOM-104', fac: 'Kumar', year: 'First Year', sem: 'Semester 2',
+        chapters: chapters('Ratio & Proportion', 'Matrices & Determinants', 'Differentiation', 'Interest & Annuities') },
+      { name: 'Corporate Accounting', code: 'BCOM-201', fac: 'Menon', year: 'Second Year', sem: 'Semester 3',
+        chapters: chapters('Issue of Shares', 'Issue of Debentures', 'Company Final Accounts', 'Amalgamation & Absorption', 'Valuation of Goodwill') },
+      { name: 'Cost Accounting', code: 'BCOM-202', fac: 'Menon', year: 'Second Year', sem: 'Semester 3',
+        chapters: chapters('Introduction to Costing', 'Material Cost', 'Labour Cost', 'Overheads') },
+      { name: 'Business Law', code: 'BCOM-203', fac: 'Mathew', year: 'Second Year', sem: 'Semester 4',
+        chapters: chapters('Indian Contract Act', 'Sale of Goods Act', 'Negotiable Instruments', 'Consumer Protection') },
+      { name: 'Income Tax Law & Practice', code: 'BCOM-204', fac: 'Prakash', year: 'Second Year', sem: 'Semester 4',
+        chapters: chapters('Basic Concepts', 'Residential Status', 'Income from Salary', 'Income from House Property', 'Deductions & Rebates') },
+      { name: 'Auditing', code: 'BCOM-301', fac: 'Suresh', year: 'Third Year', sem: 'Semester 5',
+        chapters: chapters('Nature of Auditing', 'Internal Control', 'Vouching', 'Company Audit') },
+      { name: 'Management Accounting', code: 'BCOM-302', fac: 'Menon', year: 'Third Year', sem: 'Semester 6',
+        chapters: chapters('Ratio Analysis', 'Fund Flow Statement', 'Cash Flow Statement', 'Budgetary Control', 'Marginal Costing') },
+    ],
+    batches: ['B.Com 2023–2026', 'B.Com 2024–2027', 'B.Com 2025–2028', 'B.Com 2026–2029'],
+  },
+  {
+    university: 'IGNOU', name: 'BA English', semesters: false,
+    years: [
+      { name: 'First Year',  order: 1 },
+      { name: 'Second Year', order: 2 },
+      { name: 'Third Year',  order: 3 },
+    ],
+    subjects: [
+      { name: 'British Poetry', code: 'BAEG-101', fac: 'Pillai', year: 'First Year',
+        chapters: chapters('The Elizabethan Age', 'The Metaphysical Poets', 'Romantic Poetry', 'Victorian Poetry') },
+      { name: 'Indian Writing in English', code: 'BAEG-102', fac: 'Pillai', year: 'First Year',
+        chapters: chapters('Introduction to Indian Writing', 'Poetry: Tagore & Naidu', 'The Indian Novel', 'Post-colonial Themes') },
+      { name: 'British Drama', code: 'BAEG-201', fac: 'Sebastian', year: 'Second Year',
+        chapters: chapters('Elizabethan Drama', 'Shakespearean Tragedy', 'Restoration Comedy', 'Modern Drama') },
+      { name: 'Literary Criticism', code: 'BAEG-202', fac: 'Pillai', year: 'Second Year',
+        chapters: chapters('Classical Criticism', 'Practical Criticism', 'Modern Literary Theories') },
+      { name: 'American Literature', code: 'BAEG-301', fac: 'Sebastian', year: 'Third Year',
+        chapters: chapters('Transcendentalism', 'The American Novel', 'Modern American Poetry', 'Drama & Identity') },
+    ],
+    batches: ['BA English 2024–2027', 'BA English 2025–2028'],
+  },
+  {
+    university: 'Calicut University', name: 'BBA', semesters: true,
+    years: [
+      { name: 'First Year',  order: 1, sems: ['Semester 1', 'Semester 2'] },
+      { name: 'Second Year', order: 2, sems: ['Semester 3', 'Semester 4'] },
+    ],
+    subjects: [
+      { name: 'Principles of Management', code: 'BBA-101', fac: 'Nair', year: 'First Year', sem: 'Semester 1',
+        chapters: chapters('Evolution of Management', 'Planning', 'Organising', 'Directing & Controlling') },
+      { name: 'Business Communication', code: 'BBA-102', fac: 'Krishnan', year: 'First Year', sem: 'Semester 1',
+        chapters: chapters('Communication Process', 'Business Correspondence', 'Report Writing', 'Presentation Skills') },
+      { name: 'Financial Management', code: 'BBA-103', fac: 'Rasheed', year: 'First Year', sem: 'Semester 2',
+        chapters: chapters('Time Value of Money', 'Capital Budgeting', 'Cost of Capital', 'Working Capital') },
+      { name: 'Marketing Management', code: 'BBA-201', fac: 'Krishnan', year: 'Second Year', sem: 'Semester 3',
+        chapters: chapters('Marketing Concepts', 'Consumer Behaviour', 'Product & Pricing', 'Promotion & Distribution') },
+      { name: 'Human Resource Management', code: 'BBA-202', fac: 'Rasheed', year: 'Second Year', sem: 'Semester 3',
+        chapters: chapters('HR Planning', 'Recruitment & Selection', 'Training & Development', 'Performance Appraisal') },
+      { name: 'Operations Research', code: 'BBA-203', fac: 'Prakash', year: 'Second Year', sem: 'Semester 4',
+        chapters: chapters('Linear Programming', 'Transportation Problem', 'Assignment Problem', 'Queuing Theory') },
+    ],
+    batches: ['BBA 2024–2027', 'BBA 2025–2028', 'BBA 2026–2029'],
+  },
+  {
+    university: 'Calicut University', name: 'M.Com', semesters: false,
+    years: [
+      { name: 'First Year',  order: 1 },
+      { name: 'Second Year', order: 2 },
+    ],
+    subjects: [
+      { name: 'Advanced Corporate Accounting', code: 'MCOM-101', fac: 'Menon', year: 'First Year',
+        chapters: chapters('Holding Company Accounts', 'Liquidation of Companies', 'Banking Company Accounts', 'Insurance Accounts') },
+      { name: 'Quantitative Techniques', code: 'MCOM-102', fac: 'Prakash', year: 'First Year',
+        chapters: chapters('Probability Distributions', 'Hypothesis Testing', 'Correlation & Regression', 'Time Series') },
+      { name: 'Strategic Management', code: 'MCOM-201', fac: 'Mathew', year: 'Second Year',
+        chapters: chapters('Strategy Formulation', 'Environmental Analysis', 'Corporate Strategy', 'Strategy Implementation') },
+      { name: 'International Business', code: 'MCOM-202', fac: 'Suresh', year: 'Second Year',
+        chapters: chapters('Globalisation', 'Trade Theories', 'Foreign Exchange', 'MNCs & FDI') },
+    ],
+    batches: ['M.Com 2025–2027', 'M.Com 2026–2028'],
+  },
 ];
-for (const row of baLayout) {
-  for (const sname of row.subjects) {
-    const ays = await assignSubject(row.year.id, subjectId[sname], null);
-    await buildSubjectChapters(ays.id, sname, baSubjects[sname]);
+
+// ── build universities / streams / syllabus ──────────────────────────────────
+
+console.log('Seeding universities, streams & shared syllabus…');
+const uni = {};
+uni['IGNOU'] = await addUniversity('IGNOU', 'IGNOU');
+uni['Calicut University'] = await addUniversity('Calicut University', 'CU');
+
+const slugify = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+
+let recCycle = 0;
+const built = []; // { stream, university, years:{name:{row,sems:{name:row}}}, subjects:[{row,def,chapters:[ids]}] }
+
+for (const def of STREAMS) {
+  const u = uni[def.university];
+  const stream = await addStream(def.name, u.id);
+
+  // years + semesters
+  const years = {};
+  for (const y of def.years) {
+    const yearRow = await addYear(stream.id, y.name, y.order);
+    const sems = {};
+    if (def.semesters && y.sems) {
+      let so = (y.order - 1) * 2 + 1;
+      for (const sname of y.sems) sems[sname] = await addSemester(yearRow.id, sname, so++);
+    }
+    years[y.name] = { row: yearRow, sems };
   }
+
+  // subjects + chapters + recordings + resources
+  const subjects = [];
+  for (const s of def.subjects) {
+    const subjRow = await addSubject(s.name, s.code, u.id, stream.id);
+    const year = years[s.year];
+    const sem = s.sem ? year.sems[s.sem] : null;
+    await assignSubject(year.row.id, subjRow.id, sem ? sem.id : null);
+
+    const chapterRows = [];
+    let n = 1;
+    for (const title of s.chapters) {
+      const ch = await addChapter(subjRow.id, title, n);
+      chapterRows.push(ch);
+      const state = REC_STATES[recCycle++ % REC_STATES.length];
+      await recordChapter(ch.id, state, {
+        fac: fac[s.fac],
+        slug: slugify(`${s.code}-${title}`),
+        date: addDays('2026-05-01', (recCycle * 3) % 80),
+        dur: pick(['45m', '50m', '55m', '1h', '1h 05m', '1h 15m', '1h 30m']),
+      });
+      // a couple of learning resources on the first chapters
+      if (n === 1) {
+        await addResource(ch.id, 'pdf', `${title} — Notes`, `https://files.eddream.in/${slugify(title)}.pdf`);
+        await addResource(ch.id, 'question_paper', `${title} — Previous Paper`, `https://files.eddream.in/${slugify(title)}-qp.pdf`);
+      }
+      n++;
+    }
+    subjects.push({ row: subjRow, def: s, chapters: chapterRows, year, sem });
+  }
+
+  // batches
+  const batches = [];
+  for (const bname of def.batches) batches.push(await addBatch(bname, u.id, stream.id));
+
+  built.push({ def, university: u, stream, years, subjects, batches });
 }
 
-// ── batches (all inherit the shared stream syllabus) ─────────────────────────
-
-console.log('Seeding batches…');
-const bcom2324 = await addBatch('B.Com 2023–2026', ignou.id, bcom.id);
-const bcom2427 = await addBatch('B.Com 2024–2027', ignou.id, bcom.id);
-const bcom2629 = await addBatch('B.Com 2026–2029', ignou.id, bcom.id);
-const ba2427   = await addBatch('BA English 2024–2027', ignou.id, baeng.id);
-
-// ── a few class sessions for the B.Com 2024–2027 batch (Year 2 / Sem 3) ──────
+// ── class sessions ───────────────────────────────────────────────────────────
+// Spread over ~4 months around today, alternating mode and cycling faculty so
+// every filter combination has rows behind it.
 
 console.log('Seeding class sessions…');
-const caCh = (t) => chapterId[`Corporate Accounting|${t}`];
-const classes = [
-  { date: '2026-07-06', start: '09:30', end: '11:00', chapter: caCh('Issue of Shares'),        status: 'taken',     payment: 'paid' },
-  { date: '2026-07-08', start: '09:30', end: '11:00', chapter: caCh('Issue of Debentures'),    status: 'taken',     payment: 'paid' },
-  { date: '2026-07-13', start: '09:30', end: '11:00', chapter: caCh('Company Final Accounts'), status: 'taken',     payment: 'pending' },
-  { date: '2026-07-15', start: '09:30', end: '11:00', chapter: caCh('Amalgamation & Absorption'), status: 'scheduled' },
-  { date: '2026-07-20', start: '09:30', end: '11:00', chapter: caCh('Issue of Shares'),        status: 'scheduled' },
+const SLOTS = [
+  ['09:30', '11:00'], ['11:15', '12:45'], ['14:00', '15:30'], ['16:00', '17:30'], ['18:00', '19:30'],
 ];
-for (const cl of classes) {
-  await addClass({
-    ...cl, fac: facAnjali.id, subject: subjectId['Corporate Accounting'],
-    university: ignou.id, batch: bcom2427.id, stream: bcom.id,
-    year: bcomYear2.id, sem: bcomS3.id, mode: 'online', platform: 'Zoom',
-  });
+const PLATFORMS = ['Zoom', 'Google Meet', 'Microsoft Teams'];
+const ROOMS = ['Room 101', 'Room 204', 'Seminar Hall', 'Lab 2'];
+const START = '2026-06-01';
+
+let classCount = 0;
+let dayCursor = 0;
+
+for (const b of built) {
+  for (const batch of b.batches) {
+    for (const subj of b.subjects) {
+      // 6 sessions per subject per batch, one per chapter (wrapping if fewer).
+      for (let i = 0; i < 6; i++) {
+        const date = addDays(START, (dayCursor * 2) % 120);
+        dayCursor++;
+        const [start, end] = SLOTS[classCount % SLOTS.length];
+        const online = classCount % 2 === 0;
+        const past = date <= TODAY;
+        // Past classes are mostly taken, with a realistic minority missed.
+        const status = past ? (classCount % 7 === 0 ? 'not_taken' : 'taken') : 'scheduled';
+        const chapter = subj.chapters[i % subj.chapters.length];
+
+        await addClass({
+          date, start, end,
+          fac: fac[subj.def.fac],
+          subject: subj.row.id,
+          university: b.university.id,
+          batch: batch.id,
+          stream: b.stream.id,
+          year: subj.year.row.id,
+          sem: subj.sem ? subj.sem.id : null,
+          chapter: chapter.id,
+          mode: online ? 'online' : 'offline',
+          platform: online ? pick(PLATFORMS) : pick(ROOMS),
+          status,
+          payment: status === 'taken' ? (classCount % 3 === 0 ? 'paid' : 'pending') : 'pending',
+          notes: status === 'not_taken' ? 'Faculty on leave — to be rescheduled.' : null,
+        });
+        classCount++;
+      }
+    }
+  }
+}
+
+// ── weekly timetables ────────────────────────────────────────────────────────
+
+console.log('Seeding timetables…');
+const thisMonday = mondayOf(TODAY);
+let timetableCount = 0;
+let slotCount = 0;
+
+for (const b of built) {
+  for (const batch of b.batches.slice(0, 2)) { // first two batches of each stream
+    for (const weekOffset of [0, 7]) {
+      const weekStart = addDays(thisMonday, weekOffset);
+      const tt = await one(await sql`
+        INSERT INTO timetables (name, university_id, batch_id, week_start_date, created_by)
+        VALUES (${`Week of ${weekStart} – ${batch.name}`}, ${b.university.id}, ${batch.id}, ${weekStart}, ${ADMIN})
+        RETURNING *`);
+      timetableCount++;
+
+      // Mon–Fri, one subject per day, cycling through the stream's subjects.
+      for (let d = 0; d < 5; d++) {
+        const subj = b.subjects[(d + weekOffset) % b.subjects.length];
+        const [start, end] = SLOTS[d % SLOTS.length];
+        const day = dayNameOf(addDays(weekStart, d));
+        await sql`
+          INSERT INTO timetable_slots (timetable_id, day_of_week, start_time, end_time, faculty_id, subject_id, class_taken_status)
+          VALUES (${tt.id}, ${day}, ${start}, ${end}, ${fac[subj.def.fac]}, ${subj.row.id},
+                  ${weekOffset === 0 && d < 3 ? 'taken' : 'scheduled'})`;
+        slotCount++;
+      }
+    }
+  }
 }
 
 // ── NIOS ─────────────────────────────────────────────────────────────────────
@@ -327,19 +470,33 @@ async function assignNiosSubject(uniId, subjectId) {
     INSERT INTO nios_university_subjects (nios_university_id, nios_subject_id)
     VALUES (${uniId}, ${subjectId}) ON CONFLICT DO NOTHING RETURNING *`);
 }
-async function addNiosChapter(usId, title, order) {
+async function addNiosChapter(subjectId, title, order) {
   return one(await sql`
-    INSERT INTO nios_chapters (nios_university_subject_id, title, chapter_order, created_by)
-    VALUES (${usId}, ${title}, ${order}, ${ADMIN}) RETURNING *`);
+    INSERT INTO nios_chapters (nios_subject_id, title, chapter_order, created_by)
+    VALUES (${subjectId}, ${title}, ${order}, ${ADMIN}) RETURNING *`);
 }
-async function recordNiosChapter(chapterId, rec) {
+async function recordNiosChapter(chapterId, state, { fac: f, slug, date, dur }) {
+  if (state === 'none') return;
+  const yt  = ['full', 'yt'].includes(state) ? `https://youtu.be/${slug}` : null;
+  const gd  = ['full', 'gd'].includes(state) ? `https://drive.google.com/file/d/${slug}/view` : null;
+  const app = ['full', 'app'].includes(state) ? `https://app.eddream.in/lesson/${slug}` : null;
+  const hdd = state === 'hdd' ? 'Studio HDD-03 / NIOS' : null;
   await sql`
     INSERT INTO nios_chapter_recordings (
-      nios_chapter_id, is_recorded, faculty_id, recording_date, recording_duration,
-      editing_status, backup_available, upload_youtube, upload_youtube_link, youtube_privacy, created_by
+      nios_chapter_id, is_recorded, faculty_id, recording_date, recording_file_name,
+      recording_duration, notes, editing_status, backup_available, storage_location,
+      upload_youtube, upload_youtube_link, youtube_privacy,
+      upload_gdrive, upload_gdrive_link,
+      upload_student_app, upload_student_app_link,
+      upload_harddisk, upload_harddisk_location, created_by
     ) VALUES (
-      ${chapterId}, true, ${rec.fac || null}, ${rec.date || null}, ${rec.dur || null},
-      ${rec.edited ? 'edited' : 'not_edited'}, true, ${!!rec.yt}, ${rec.yt || null}, ${rec.yt ? 'unlisted' : null}, ${ADMIN}
+      ${chapterId}, ${state !== 'flagged'}, ${f}, ${date}, ${`${slug}.mp4`},
+      ${dur}, ${state === 'pending' ? 'Awaiting upload.' : null},
+      ${['full', 'gd'].includes(state) ? 'edited' : 'not_edited'}, ${state === 'full'}, ${'Studio NAS / ' + slug},
+      ${!!yt}, ${yt}, ${yt ? 'unlisted' : null},
+      ${!!gd}, ${gd},
+      ${!!app}, ${app},
+      ${!!hdd}, ${hdd}, ${ADMIN}
     )`;
 }
 async function addNiosBatch(uniId, name, year) {
@@ -348,92 +505,120 @@ async function addNiosBatch(uniId, name, year) {
     VALUES (${uniId}, ${name}, ${year}, ${ADMIN}) RETURNING *`);
 }
 
-const niosDefs = [
-  { uni: niosPlusTwo, subjects: {
-    'Physics':          { code: '312', fac: facRajesh.id, chapters: [
-      { t: 'Motion in a Straight Line', rec: { dur: '1h', yt: 'https://youtu.be/phy-1' } },
-      { t: 'Laws of Motion', rec: { dur: '1h 05m', edited: true, yt: 'https://youtu.be/phy-2' } },
-      { t: 'Work, Energy & Power' },
-      { t: 'Gravitation' },
-    ] },
-    'Chemistry':        { code: '313', fac: facRajesh.id, chapters: [
-      { t: 'Atomic Structure', rec: { dur: '55m', yt: 'https://youtu.be/chem-1' } },
-      { t: 'Chemical Bonding' },
-      { t: 'States of Matter' },
-    ] },
-    'Accountancy':      { code: '320', fac: facAnjali.id, chapters: [
-      { t: 'Basics of Accounting', rec: { dur: '1h', edited: true, yt: 'https://youtu.be/acc-1' } },
-      { t: 'Journal & Ledger' },
-      { t: 'Financial Statements' },
-    ] },
-  } },
-  { uni: niosSSLC, subjects: {
-    'Mathematics':      { code: '211', fac: facRajesh.id, chapters: [
-      { t: 'Real Numbers', rec: { dur: '50m', yt: 'https://youtu.be/math-1' } },
-      { t: 'Polynomials', rec: { dur: '55m', yt: 'https://youtu.be/math-2' } },
-      { t: 'Linear Equations' },
-      { t: 'Trigonometry' },
-    ] },
-    'Science & Technology': { code: '212', fac: facRajesh.id, chapters: [
-      { t: 'Life Processes', rec: { dur: '1h', yt: 'https://youtu.be/sci-1' } },
-      { t: 'Electricity' },
-      { t: 'Chemical Reactions' },
-    ] },
-    'Social Science':   { code: '213', fac: facVinod.id, chapters: [
-      { t: 'Nationalism in India' },
-      { t: 'Resources & Development' },
-    ] },
-  } },
+const NIOS = [
+  { uni: niosPlusTwo, subjects: [
+    { name: 'Physics', code: '312', fac: 'Kumar', chapters: chapters('Motion in a Straight Line', 'Laws of Motion', 'Work, Energy & Power', 'Gravitation', 'Thermodynamics') },
+    { name: 'Chemistry', code: '313', fac: 'Kumar', chapters: chapters('Atomic Structure', 'Chemical Bonding', 'States of Matter', 'Chemical Kinetics') },
+    { name: 'Biology', code: '314', fac: 'Suresh', chapters: chapters('The Living World', 'Cell Structure', 'Plant Physiology', 'Human Physiology') },
+    { name: 'Mathematics (+2)', code: '311', fac: 'Prakash', chapters: chapters('Sets & Functions', 'Trigonometric Functions', 'Calculus', 'Vectors', 'Probability') },
+    { name: 'Accountancy', code: '320', fac: 'Menon', chapters: chapters('Basics of Accounting', 'Journal & Ledger', 'Financial Statements', 'Partnership Accounts') },
+    { name: 'Business Studies', code: '319', fac: 'Nair', chapters: chapters('Nature of Business', 'Forms of Organisation', 'Management Principles', 'Marketing') },
+  ] },
+  { uni: niosSSLC, subjects: [
+    { name: 'Mathematics', code: '211', fac: 'Prakash', chapters: chapters('Real Numbers', 'Polynomials', 'Linear Equations', 'Trigonometry', 'Statistics') },
+    { name: 'Science & Technology', code: '212', fac: 'Suresh', chapters: chapters('Life Processes', 'Electricity', 'Chemical Reactions', 'Light & Reflection') },
+    { name: 'Social Science', code: '213', fac: 'Nair', chapters: chapters('Nationalism in India', 'Resources & Development', 'Democratic Politics', 'Money & Credit') },
+    { name: 'English', code: '202', fac: 'Pillai', chapters: chapters('Reading Comprehension', 'Grammar in Use', 'Writing Skills', 'Literature Reader') },
+    { name: 'Hindi', code: '201', fac: 'Sebastian', chapters: chapters('गद्य खंड', 'पद्य खंड', 'व्याकरण', 'रचना') },
+  ] },
 ];
 
-const niosChapterId = {}; // key `${subjectName}|${chapterTitle}`
-for (const group of niosDefs) {
-  for (const [sname, def] of Object.entries(group.subjects)) {
-    const subj = await addNiosSubject(sname, def.code);
-    const us = await assignNiosSubject(group.uni.id, subj.id);
+let niosRecCycle = 0;
+const niosBuilt = [];
+for (const group of NIOS) {
+  const subjects = [];
+  for (const s of group.subjects) {
+    const subj = await addNiosSubject(s.name, s.code);
+    await assignNiosSubject(group.uni.id, subj.id);
+    const chapterRows = [];
     let n = 1;
-    for (const ch of def.chapters) {
-      const c = await addNiosChapter(us.id, ch.t, n++);
-      niosChapterId[`${sname}|${ch.t}`] = c.id;
-      if (ch.rec) await recordNiosChapter(c.id, { fac: def.fac, date: '2026-06-15', ...ch.rec });
+    for (const title of s.chapters) {
+      const ch = await addNiosChapter(subj.id, title, n++);
+      chapterRows.push(ch);
+      const state = REC_STATES[niosRecCycle++ % REC_STATES.length];
+      await recordNiosChapter(ch.id, state, {
+        fac: fac[s.fac],
+        slug: slugify(`nios-${s.code}-${title}`) || `nios-${s.code}-${n}`,
+        date: addDays('2026-05-10', (niosRecCycle * 4) % 70),
+        dur: pick(['45m', '55m', '1h', '1h 10m', '1h 20m']),
+      });
+    }
+    subjects.push({ row: subj, def: s, chapters: chapterRows });
+  }
+  niosBuilt.push({ uni: group.uni, subjects });
+}
+
+const niosBatches = [];
+niosBatches.push(await addNiosBatch(niosPlusTwo.id, 'NIOS +2 2025 — Science', '2025'));
+niosBatches.push(await addNiosBatch(niosPlusTwo.id, 'NIOS +2 2026 — Commerce', '2026'));
+niosBatches.push(await addNiosBatch(niosSSLC.id, 'NIOS SSLC 2025', '2025'));
+niosBatches.push(await addNiosBatch(niosSSLC.id, 'NIOS SSLC 2026', '2026'));
+
+async function addNiosClass(c) {
+  const row = await one(await sql`
+    INSERT INTO nios_class_entries (date, start_time, end_time, total_hours, faculty_id, nios_batch_id, nios_subject_id, nios_chapter_id, class_mode, platform_used, class_status, payment_status, created_by)
+    VALUES (${c.date}, ${c.start}, ${c.end}, ${hours(c.start, c.end)}, ${c.fac}, ${c.batch}, ${c.subject}, ${c.chapter}, ${c.mode}, ${c.platform || null}, ${c.status}, ${c.payment || 'pending'}, ${ADMIN})
+    RETURNING *`);
+  await sql`INSERT INTO nios_class_chapters (nios_class_entry_id, nios_chapter_id) VALUES (${row.id}, ${c.chapter}) ON CONFLICT DO NOTHING`;
+  return row;
+}
+
+let niosClassCount = 0;
+for (const group of niosBuilt) {
+  const groupBatches = niosBatches.filter((b) => b.nios_university_id === group.uni.id);
+  for (const batch of groupBatches) {
+    for (const subj of group.subjects) {
+      for (let i = 0; i < 4; i++) {
+        const date = addDays(START, (niosClassCount * 3) % 120);
+        const [start, end] = SLOTS[niosClassCount % SLOTS.length];
+        const online = niosClassCount % 2 === 0;
+        const past = date <= TODAY;
+        await addNiosClass({
+          date, start, end,
+          fac: fac[subj.def.fac],
+          batch: batch.id,
+          subject: subj.row.id,
+          chapter: subj.chapters[i % subj.chapters.length].id,
+          mode: online ? 'online' : 'offline',
+          platform: online ? pick(PLATFORMS) : pick(ROOMS),
+          status: past ? (niosClassCount % 8 === 0 ? 'not_taken' : 'taken') : 'scheduled',
+          payment: niosClassCount % 3 === 0 ? 'paid' : 'pending',
+        });
+        niosClassCount++;
+      }
     }
   }
 }
 
-const niosBatchSci = await addNiosBatch(niosPlusTwo.id, 'NIOS +2 2025 — Science', '2025');
-await addNiosBatch(niosPlusTwo.id, 'NIOS +2 2026 — Commerce', '2026');
-await addNiosBatch(niosSSLC.id, 'NIOS SSLC 2026', '2026');
-
-// a couple of NIOS classes for the Science batch, each linked to a chapter
-async function addNiosClass(c) {
-  const entry = one(await sql`
-    INSERT INTO nios_class_entries (date, start_time, end_time, total_hours, faculty_id, nios_batch_id, nios_subject_id, nios_chapter_id, class_mode, platform_used, class_status, created_by)
-    VALUES (${c.date}, ${c.start}, ${c.end}, ${hours(c.start, c.end)}, ${c.fac}, ${c.batch}, ${c.subject}, ${c.chapter}, ${c.mode}, ${c.platform || null}, ${c.status}, ${ADMIN})
-    RETURNING *`);
-  const e = await entry;
-  await sql`INSERT INTO nios_class_chapters (nios_class_entry_id, nios_chapter_id) VALUES (${e.id}, ${c.chapter}) ON CONFLICT DO NOTHING`;
-  return e;
-}
-const physicsSubjId = (await sql`SELECT id FROM nios_subjects WHERE name = 'Physics'`)[0].id;
-await addNiosClass({ date: '2026-07-07', start: '16:00', end: '17:30', fac: facRajesh.id, batch: niosBatchSci.id, subject: physicsSubjId, chapter: niosChapterId['Physics|Motion in a Straight Line'], mode: 'online', platform: 'Google Meet', status: 'taken' });
-await addNiosClass({ date: '2026-07-09', start: '16:00', end: '17:30', fac: facRajesh.id, batch: niosBatchSci.id, subject: physicsSubjId, chapter: niosChapterId['Physics|Laws of Motion'], mode: 'online', platform: 'Google Meet', status: 'taken' });
-
 // ── summary ──────────────────────────────────────────────────────────────────
 
-const counts = one(await sql`SELECT
+const counts = await one(await sql`SELECT
   (SELECT count(*) FROM universities) universities,
   (SELECT count(*) FROM streams) streams,
+  (SELECT count(*) FROM faculty) faculty,
   (SELECT count(*) FROM subjects) subjects,
   (SELECT count(*) FROM chapters) chapters,
   (SELECT count(*) FROM chapter_recordings) recordings,
+  (SELECT count(*) FROM learning_resources) resources,
   (SELECT count(*) FROM batches) batches,
   (SELECT count(*) FROM class_entries) classes,
+  (SELECT count(*) FROM timetables) timetables,
+  (SELECT count(*) FROM timetable_slots) slots`);
+
+const niosCounts = await one(await sql`SELECT
   (SELECT count(*) FROM nios_subjects) nios_subjects,
   (SELECT count(*) FROM nios_chapters) nios_chapters,
   (SELECT count(*) FROM nios_chapter_recordings) nios_recordings,
-  (SELECT count(*) FROM nios_batches) nios_batches`);
+  (SELECT count(*) FROM nios_batches) nios_batches,
+  (SELECT count(*) FROM nios_class_entries) nios_classes`);
+
+const modeMix = await sql`SELECT class_mode, class_status, count(*)::int FROM class_entries GROUP BY 1,2 ORDER BY 1,2`;
+
 console.log('\nSample data seeded:');
-console.table([await counts]);
+console.table([counts]);
+console.table([niosCounts]);
+console.log('Class mode / status mix:');
+console.table(modeMix);
 
 await pool.end();
 console.log('Done.');
