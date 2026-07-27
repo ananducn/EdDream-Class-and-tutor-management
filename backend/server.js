@@ -444,6 +444,11 @@ async function runMigrations() {
 
 const app = express();
 
+// Railway terminates TLS and proxies to us, so without this every request looks
+// like it comes from the proxy and the login rate limiter would count all users
+// as one client — locking everybody out together. Trust exactly one hop.
+app.set('trust proxy', 1);
+
 app.use(helmet());
 const allowedOrigins = [process.env.FRONTEND_URL, ...(process.env.NODE_ENV !== 'production' ? ['http://localhost:5173', 'http://localhost:5174', 'http://localhost:5175'] : [])];
 app.use(cors({ origin: allowedOrigins }));
