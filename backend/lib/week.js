@@ -60,3 +60,24 @@ export function timesOverlap(aStart, aEnd, bStart, bEnd) {
   const t = (s) => s.slice(0, 5);
   return t(aStart) < t(bEnd) && t(bStart) < t(aEnd);
 }
+
+// "Now" as calendar parts in the institute's own timezone.
+//
+// Class dates and times are stored as bare wall-clock values (DATE + TIME with no
+// zone) — 14:00 means 2pm where the institute is. Comparing those against
+// new Date().toISOString(), which is UTC, made a class look like it was still in
+// the future for as long as the UTC offset: 5h30m in IST, so a 14:00 class could
+// not be marked taken until 19:30 local. Compare against local parts instead.
+//
+// Override with INSTITUTE_TZ if the institute is not in India.
+export function nowInZone(tz = process.env.INSTITUTE_TZ || 'Asia/Kolkata') {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date()).reduce((acc, p) => { acc[p.type] = p.value; return acc; }, {});
+  return {
+    date: `${parts.year}-${parts.month}-${parts.day}`,
+    time: `${parts.hour}:${parts.minute}`,
+  };
+}
