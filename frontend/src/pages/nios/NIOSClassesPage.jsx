@@ -14,6 +14,8 @@ import StatusBadge from '@/components/StatusBadge';
 import { SkeletonTable } from '@/components/Skeletons';
 import { useAuth } from '@/context/AuthContext';
 import client from '@/api/client';
+import { to12h } from '@/lib/time';
+import { defaultDateRange, describeDateRange } from '@/lib/dateRange';
 
 // Render helpers: derive subject / chapter labels from a class's chapters array
 // (falls back to the legacy singular columns for pre-migration rows).
@@ -43,17 +45,6 @@ const emptyFilters = {
 };
 
 const YEAR_OPTIONS = Array.from({ length: 11 }, (_, i) => String(2020 + i));
-
-// Format a "HH:MM[:SS]" time string as 12-hour, e.g. "15:05" -> "03:05 PM".
-function to12h(t) {
-  if (!t) return t;
-  const [h, m] = String(t).split(':');
-  const hr = parseInt(h, 10);
-  if (Number.isNaN(hr)) return t;
-  const ampm = hr >= 12 ? 'PM' : 'AM';
-  const h12 = hr % 12 || 12;
-  return `${String(h12).padStart(2, '0')}:${m} ${ampm}`;
-}
 
 function calcHours(start, end) {
   if (!start || !end) return '';
@@ -85,6 +76,8 @@ export default function NIOSClassesPage() {
   const [pickerSubject, setPickerSubject] = useState(''); // which subject's chapters are shown
 
   const [filters, setFilters] = useState(emptyFilters);
+  // The date range actually loaded, shown under the filters.
+  const [appliedRange, setAppliedRange] = useState({ from: '', to: '' });
   const [formOpen, setFormOpen] = useState(false);
   const [viewDialog, setViewDialog] = useState(null);
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -114,6 +107,8 @@ export default function NIOSClassesPage() {
 
   async function loadClasses(params = filters) {
     setLoading(true);
+    // Remember what was actually fetched so the summary line can't drift from it.
+    setAppliedRange({ from: params.date_from || '', to: params.date_to || '' });
     try {
       const query = new URLSearchParams();
       Object.entries(params).forEach(([k, v]) => { if (v !== '') query.set(k, v); });
@@ -128,7 +123,8 @@ export default function NIOSClassesPage() {
 
   useEffect(() => {
     loadDropdowns();
-    const initialFilters = { ...emptyFilters };
+    // Default to the last three months; a ?date_from=/?date_to= in the URL still wins.
+    const initialFilters = { ...emptyFilters, ...defaultDateRange() };
     searchParams.forEach((v, k) => { if (k in initialFilters) initialFilters[k] = v; });
     setFilters(initialFilters);
     loadClasses(initialFilters);
@@ -448,10 +444,14 @@ export default function NIOSClassesPage() {
               </Select>
             </div>
           </div>
+          <p className="text-xs text-slate-500 dark:text-slate-400 mt-2">
+            {describeDateRange(appliedRange.from, appliedRange.to)} Change the dates to see other periods.
+          </p>
           <div className="flex gap-2 mt-3">
             <Button size="sm" onClick={() => loadClasses()} disabled={loading}>{loading ? 'Searching...' : 'Search'}</Button>
             <Button size="sm" variant="outline" onClick={() => {
-              const cleared = { ...emptyFilters };
+              // Clear returns to the default window, not to an unbounded "everything".
+              const cleared = { ...emptyFilters, ...defaultDateRange() };
               setFilters(cleared);
               setFilterBatches(allBatches);
               setFilterSubjects(allSubjects);

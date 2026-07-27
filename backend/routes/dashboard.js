@@ -48,11 +48,18 @@ router.get('/summary', auth, cacheRoute(30000), async (req, res, next) => {
       // batches (one row per batch, same faculty + hours). Faculty taught it once,
       // so collapse each group to a single row before summing hours — otherwise a
       // class shared by N batches would count as N× the hours.
-      sql`SELECT f.name AS faculty_name, COALESCE(SUM(g.total_hours), 0) AS total_hours
+      // Hours are broken out by status rather than lumped together: the total on
+      // its own credited a faculty for classes that were scheduled but not yet
+      // delivered, or explicitly marked not taken.
+      sql`SELECT f.name AS faculty_name,
+                 COALESCE(SUM(g.total_hours) FILTER (WHERE g.class_status = 'taken'), 0)     AS taken_hours,
+                 COALESCE(SUM(g.total_hours) FILTER (WHERE g.class_status = 'scheduled'), 0) AS scheduled_hours,
+                 COALESCE(SUM(g.total_hours) FILTER (WHERE g.class_status = 'not_taken'), 0) AS not_taken_hours,
+                 COALESCE(SUM(g.total_hours), 0) AS total_hours
           FROM faculty f
           LEFT JOIN (
             SELECT DISTINCT ON (COALESCE(ce.class_group_id, ce.id))
-                   ce.faculty_id, ce.total_hours
+                   ce.faculty_id, ce.total_hours, ce.class_status
             FROM class_entries ce
             WHERE DATE_TRUNC('month', ce.date) = DATE_TRUNC('month', CURRENT_DATE)
             ORDER BY COALESCE(ce.class_group_id, ce.id), ce.id
@@ -60,7 +67,7 @@ router.get('/summary', auth, cacheRoute(30000), async (req, res, next) => {
           WHERE f.is_active = true
           GROUP BY f.id, f.name
           HAVING COALESCE(SUM(g.total_hours), 0) > 0
-          ORDER BY total_hours DESC`,
+          ORDER BY taken_hours DESC, total_hours DESC`,
 
       req.user.role === 'admin'
         ? sql`SELECT al.*, u.name AS user_name FROM activity_logs al

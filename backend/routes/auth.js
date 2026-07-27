@@ -1,5 +1,6 @@
 import express from 'express';
 import bcrypt from 'bcrypt';
+import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { sql } from '../db.js';
@@ -8,8 +9,35 @@ import { sendPasswordReset, sendStaffInvite } from '../email.js';
 
 const router = express.Router();
 
+// Throttle the unauthenticated endpoints. bcrypt(12) makes each guess expensive
+// but nothing capped how many could be attempted, so a password could be brute
+// forced given time. Counted per IP — server.js sets `trust proxy` so that is the
+// real client address behind Railway's proxy, not the proxy's own.
+//
+// Successful logins don't count against the limit, so a staff member who signs in
+// correctly is never locked out by someone else's failed attempts from a shared
+// office IP.
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 8,
+  skipSuccessfulRequests: true,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many login attempts. Please try again in 15 minutes.' },
+});
+
+// Password reset and invite acceptance are also unauthenticated and guessable
+// (a token in the body), so they get their own, tighter budget.
+const tokenLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  message: { error: 'Too many attempts. Please try again later.' },
+});
+
 // POST /api/auth/login
-router.post('/login', async (req, res) => {
+router.post('/login', loginLimiter, async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and password are required.' });
@@ -43,7 +71,7 @@ router.get('/me', auth, async (req, res) => {
 });
 
 // POST /api/auth/forgot-password
-router.post('/forgot-password', async (req, res) => {
+router.post('/forgot-password', tokenLimiter, async (req, res) => {
   const { email } = req.body;
   if (!email) {
     return res.status(400).json({ error: 'Email is required.' });
@@ -66,7 +94,7 @@ router.post('/forgot-password', async (req, res) => {
 });
 
 // POST /api/auth/reset-password
-router.post('/reset-password', async (req, res) => {
+router.post('/reset-password', tokenLimiter, async (req, res) => {
   const { token, newPassword } = req.body;
   if (!token || !newPassword) {
     return res.status(400).json({ error: 'Token and new password are required.' });
@@ -90,7 +118,7 @@ router.post('/reset-password', async (req, res) => {
 });
 
 // POST /api/auth/accept-invite
-router.post('/accept-invite', async (req, res) => {
+router.post('/accept-invite', tokenLimiter, async (req, res) => {
   const { token, password } = req.body;
   if (!token || !password) {
     return res.status(400).json({ error: 'Token and password are required.' });

@@ -3,6 +3,7 @@ import { sql } from '../db.js';
 import { auth } from '../middleware/auth.js';
 import { logActivity } from '../middleware/logger.js';
 import { DAYS, dateForSlot, nowInZone } from '../lib/week.js';
+import { normalizeSlotGroups, normalizeClassGroups } from '../lib/groups.js';
 
 const router = express.Router();
 
@@ -14,26 +15,41 @@ function hoursBetween(start, end) {
   return mins > 0 ? (mins / 60).toFixed(2) : null;
 }
 
-// Keep the class entry linked to a slot in sync with the slot's status.
-// - Marking a slot "scheduled" or "taken" creates a linked class entry if none exists yet.
-// - Any status change is mirrored onto an existing linked class.
-// - "not_taken" never creates a class on its own.
-async function syncClassForSlot(slot, timetable, userId) {
+// Keep the class entry linked to a slot in sync with the slot.
+// - An existing linked class always takes the slot's faculty, subject, times, day
+//   and status, so the two records never disagree after an edit.
+// - Marking a slot "scheduled" or "taken" creates a linked class entry if none
+//   exists yet; "not_taken" never creates a class on its own.
+// - allowCreate=false updates an existing class but won't create one, so a plain
+//   field edit on a slot that never had a class doesn't conjure one.
+async function syncClassForSlot(slot, timetable, userId, { allowCreate = true } = {}) {
   const status = slot.class_taken_status;
   const existing = await sql`SELECT id FROM class_entries WHERE timetable_slot_id = ${slot.id}`;
+  const slotDate = timetable?.week_start_date
+    ? dateForSlot(timetable.week_start_date, slot.day_of_week)
+    : null;
 
   if (existing[0]) {
     await sql`
-      UPDATE class_entries SET class_status = ${status}, updated_at = NOW()
+      UPDATE class_entries SET
+        class_status = ${status},
+        faculty_id = ${slot.faculty_id || null},
+        subject_id = ${slot.subject_id || null},
+        start_time = ${slot.start_time || null},
+        end_time = ${slot.end_time || null},
+        total_hours = ${hoursBetween(slot.start_time, slot.end_time)},
+        date = COALESCE(${slotDate}, date),
+        updated_at = NOW()
       WHERE id = ${existing[0].id}
     `;
     return;
   }
 
+  if (!allowCreate) return;
   if (status === 'not_taken') return;
   if (!timetable?.week_start_date) return;
 
-  const date = dateForSlot(timetable.week_start_date, slot.day_of_week);
+  const date = slotDate;
   if (!date) return;
 
   let streamId = null;
@@ -107,44 +123,6 @@ async function deleteClassesForSlots(slotIds) {
   const gone = await sql`DELETE FROM class_entries WHERE timetable_slot_id = ANY(${slotIds}) RETURNING id`;
   await normalizeClassGroups(doomed.map((c) => c.class_group_id));
   return gone.length;
-}
-
-// Same repair as normalizeSlotGroups, for the Classes page's common-class groups:
-// a group left with one member is no longer common, and a group id naming a
-// deleted row is re-pointed at a survivor.
-async function normalizeClassGroups(groupIds) {
-  const ids = [...new Set((groupIds || []).filter(Boolean))];
-  for (const gid of ids) {
-    const members = await sql`SELECT id FROM class_entries WHERE class_group_id = ${gid} ORDER BY id`;
-    if (members.length === 0) continue;
-    if (members.length === 1) {
-      await sql`UPDATE class_entries SET class_group_id = NULL WHERE id = ${members[0].id}`;
-      continue;
-    }
-    if (!members.some((m) => m.id === gid)) {
-      await sql`UPDATE class_entries SET class_group_id = ${members[0].id} WHERE class_group_id = ${gid}`;
-    }
-  }
-}
-
-// Repair common-class groups after members disappear (deleting a single batch's
-// week removes its slot but leaves the other batches' copies). A group that drops
-// to one member is no longer common, and a group whose id points at a deleted row
-// is re-pointed at a surviving member so the id always names a real slot.
-async function normalizeSlotGroups(groupIds) {
-  const ids = [...new Set((groupIds || []).filter(Boolean))];
-  for (const gid of ids) {
-    const members = await sql`SELECT id FROM timetable_slots WHERE slot_group_id = ${gid} ORDER BY id`;
-    if (members.length === 0) continue;
-    if (members.length === 1) {
-      await sql`UPDATE timetable_slots SET slot_group_id = NULL WHERE id = ${members[0].id}`;
-      continue;
-    }
-    if (!members.some((m) => m.id === gid)) {
-      const newId = members[0].id;
-      await sql`UPDATE timetable_slots SET slot_group_id = ${newId} WHERE slot_group_id = ${gid}`;
-    }
-  }
 }
 
 // Bring a slot's sharing in line with `desiredBatchIds` (the OTHER batches it
@@ -489,11 +467,11 @@ router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
     }
 
     // A common class is edited as a whole, so every batch's copy is re-synced.
-    if (class_taken_status) {
-      for (const row of members) {
-        const tt = await sql`SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date FROM timetables WHERE id = ${row.timetable_id}`;
-        await syncClassForSlot(row, tt[0], req.user.id);
-      }
+    // Any field edit propagates to the linked class, but only an explicit status
+    // change may create one that didn't exist.
+    for (const row of members) {
+      const tt = await sql`SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date FROM timetables WHERE id = ${row.timetable_id}`;
+      await syncClassForSlot(row, tt[0], req.user.id, { allowCreate: !!class_taken_status });
     }
     const updCtx = await slotContext(primary, primary.timetable_id);
     await logActivity(req.user.id, req.user.name, req.user.role, 'update_slot', 'timetable_slot', primary.id,

@@ -10,6 +10,7 @@ import StatusBadge from '@/components/StatusBadge';
 import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
+import { to12h } from '@/lib/time';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
   DropdownMenuItem, DropdownMenuSeparator,
@@ -638,7 +639,7 @@ function SlotCard({ slot, onEdit, onSetStatus, onDelete }) {
         {slotChapters(slot) && <p className="text-[11px] text-slate-400 dark:text-slate-500 break-words">{slotChapters(slot)}</p>}
       </div>
       {(slot.start_time || slot.end_time) && (
-        <p className="text-xs text-slate-400 dark:text-slate-500">{slot.start_time?.slice(0, 5)} – {slot.end_time?.slice(0, 5)}</p>
+        <p className="text-xs text-slate-400 dark:text-slate-500">{to12h(slot.start_time?.slice(0, 5))} – {to12h(slot.end_time?.slice(0, 5))}</p>
       )}
       {slot.notes && <p className="text-xs text-slate-400 dark:text-slate-500 italic">{slot.notes}</p>}
     </div>

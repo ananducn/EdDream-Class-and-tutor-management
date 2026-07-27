@@ -27,6 +27,11 @@ const PANEL = 'h-96 flex flex-col';
 const PANEL_SM = 'h-80 flex flex-col';
 const PANEL_BODY = 'flex-1 min-h-0 overflow-y-auto';
 
+// Sticky so the column labels stay put while the rows scroll under them.
+const TH = 'sticky top-0 z-10 bg-card text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400';
+
+const hrs = (v) => Number(v ?? 0).toFixed(2);
+
 function timeAgo(dateStr) {
   const diff = Date.now() - new Date(dateStr).getTime();
   const mins = Math.floor(diff / 60000);
@@ -69,6 +74,9 @@ export default function DashboardPage() {
       <Card className={PANEL}>
         <CardHeader>
           <CardTitle className="text-base text-slate-900 dark:text-slate-100">Faculty Hours — This Month</CardTitle>
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Hours delivered vs still upcoming. A class shared by several batches counts once.
+          </p>
         </CardHeader>
         <CardContent className={PANEL_BODY}>
           {!data?.faculty_hours?.length ? (
@@ -78,15 +86,21 @@ export default function DashboardPage() {
               {/* Header stays visible while the rows scroll under it. */}
               <TableHeader>
                 <TableRow>
-                  <TableHead className="sticky top-0 z-10 bg-card text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Faculty</TableHead>
-                  <TableHead className="sticky top-0 z-10 bg-card text-right text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400">Total Hours</TableHead>
+                  <TableHead className={TH}>Faculty</TableHead>
+                  <TableHead className={`${TH} text-right`}>Taken</TableHead>
+                  <TableHead className={`${TH} text-right`}>Scheduled</TableHead>
+                  <TableHead className={`${TH} text-right`}>Not Taken</TableHead>
+                  <TableHead className={`${TH} text-right`}>Total</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {data.faculty_hours.map((row, i) => (
                   <TableRow key={i}>
                     <TableCell className="text-slate-900 dark:text-slate-100">{row.faculty_name}</TableCell>
-                    <TableCell className="text-right text-slate-700 dark:text-slate-300">{Number(row.total_hours).toFixed(2)}</TableCell>
+                    <TableCell className="text-right tabular-nums font-medium text-green-600 dark:text-green-400">{hrs(row.taken_hours)}</TableCell>
+                    <TableCell className="text-right tabular-nums text-amber-600 dark:text-amber-400">{hrs(row.scheduled_hours)}</TableCell>
+                    <TableCell className="text-right tabular-nums text-slate-400 dark:text-slate-500">{hrs(row.not_taken_hours)}</TableCell>
+                    <TableCell className="text-right tabular-nums text-slate-700 dark:text-slate-300">{hrs(row.total_hours)}</TableCell>
                   </TableRow>
                 ))}
               </TableBody>

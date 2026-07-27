@@ -2,7 +2,67 @@ import express from 'express';
 import { sql } from '../db.js';
 import { auth } from '../middleware/auth.js';
 import { logActivity } from '../middleware/logger.js';
-import { nowInZone } from '../lib/week.js';
+import { nowInZone, hoursBetween, mondayOf, dayNameOf } from '../lib/week.js';
+
+// Hours feed the faculty hours report, so derive them from the times rather than
+// trusting whatever the caller posted.
+const resolveHours = (start, end, given) => hoursBetween(start, end) ?? (given || null);
+
+// Push a NIOS class's details onto the timetable slot it came from, so the weekly
+// grid never disagrees with the class. A changed date can move the class into a
+// different week, so the slot is re-homed to that week's grid, creating it if
+// needed. Mirrors syncSlotFromClass on the main side.
+async function syncNiosSlotFromClass(row, userId) {
+  if (!row.nios_timetable_slot_id) return;
+  const slot = await sql`SELECT * FROM nios_timetable_slots WHERE id = ${row.nios_timetable_slot_id}`;
+  if (!slot[0]) return;
+
+  const dayName = dayNameOf(row.date);
+  const weekStart = mondayOf(row.date);
+  let timetableId = slot[0].nios_timetable_id;
+
+  if (weekStart && row.nios_batch_id) {
+    const current = await sql`
+      SELECT nios_batch_id, nios_university_id, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date
+      FROM nios_timetables WHERE id = ${timetableId}
+    `;
+    const moved = !current[0]
+      || current[0].week_start_date !== weekStart
+      || String(current[0].nios_batch_id) !== String(row.nios_batch_id);
+    if (moved) {
+      const batch = await sql`SELECT nios_university_id, name FROM nios_batches WHERE id = ${row.nios_batch_id}`;
+      if (batch[0]) {
+        const found = await sql`
+          SELECT id FROM nios_timetables
+          WHERE nios_batch_id = ${row.nios_batch_id} AND week_start_date = ${weekStart}
+          ORDER BY created_at LIMIT 1
+        `;
+        if (found[0]) timetableId = found[0].id;
+        else {
+          const made = await sql`
+            INSERT INTO nios_timetables (name, nios_university_id, nios_batch_id, week_start_date, created_by)
+            VALUES (${`Week of ${weekStart} – ${batch[0].name}`}, ${batch[0].nios_university_id}, ${row.nios_batch_id}, ${weekStart}, ${userId})
+            RETURNING id
+          `;
+          timetableId = made[0].id;
+        }
+      }
+    }
+  }
+
+  await sql`
+    UPDATE nios_timetable_slots SET
+      nios_timetable_id = ${timetableId},
+      day_of_week = COALESCE(${dayName}, day_of_week),
+      start_time = ${row.start_time || null},
+      end_time = ${row.end_time || null},
+      faculty_id = ${row.faculty_id || null},
+      nios_subject_id = ${row.nios_subject_id || null},
+      class_taken_status = ${row.class_status},
+      updated_at = NOW()
+    WHERE id = ${row.nios_timetable_slot_id}
+  `;
+}
 
 const router = express.Router();
 
@@ -165,7 +225,7 @@ async function insertNiosClass(fields, userId, chapterIds) {
       payment_status, payment_remarks,
       is_cancelled, class_status, nios_class_group_id, created_by
     ) VALUES (
-      ${date}, ${start_time || null}, ${end_time || null}, ${total_hours || null},
+      ${date}, ${start_time || null}, ${end_time || null}, ${resolveHours(start_time, end_time, total_hours)},
       ${faculty_id || null}, ${nios_batch_id || null}, ${nios_subject_id || null}, ${nios_chapter_id || null},
       ${class_mode || null}, ${platform_used || null}, ${notes || null},
       ${payment_status || 'pending'}, ${payment_remarks || null},
@@ -241,7 +301,7 @@ router.put('/:id', auth, async (req, res, next) => {
       rows = await sql`
         UPDATE nios_class_entries SET
           date = ${date}, start_time = ${start_time || null}, end_time = ${end_time || null},
-          total_hours = ${total_hours || null}, faculty_id = ${faculty_id || null},
+          total_hours = ${resolveHours(start_time, end_time, total_hours)}, faculty_id = ${faculty_id || null},
           nios_subject_id = ${nios_subject_id || null}, nios_chapter_id = ${nios_chapter_id || null},
           class_mode = ${class_mode || null}, platform_used = ${platform_used || null}, notes = ${notes || null},
           payment_status = ${payment_status || 'pending'}, payment_remarks = ${payment_remarks || null},
@@ -253,7 +313,7 @@ router.put('/:id', auth, async (req, res, next) => {
       rows = await sql`
         UPDATE nios_class_entries SET
           date = ${date}, start_time = ${start_time || null}, end_time = ${end_time || null},
-          total_hours = ${total_hours || null}, faculty_id = ${faculty_id || null},
+          total_hours = ${resolveHours(start_time, end_time, total_hours)}, faculty_id = ${faculty_id || null},
           nios_batch_id = ${nios_batch_id || null}, nios_subject_id = ${nios_subject_id || null},
           nios_chapter_id = ${nios_chapter_id || null},
           class_mode = ${class_mode || null}, platform_used = ${platform_used || null}, notes = ${notes || null},
@@ -267,12 +327,10 @@ router.put('/:id', auth, async (req, res, next) => {
 
     for (const r of rows) await syncClassChapters(r.id, chapterIds);
 
-    const slotIds = rows.map((r) => r.nios_timetable_slot_id).filter(Boolean);
-    if (slotIds.length) {
-      await sql`
-        UPDATE nios_timetable_slots SET class_taken_status = ${status}, updated_at = NOW()
-        WHERE id = ANY(${slotIds})
-      `;
+    // Keep each row's linked slot in sync — faculty, subject and times included,
+    // not just the status.
+    for (const r of rows) {
+      await syncNiosSlotFromClass(r, req.user.id);
     }
 
     const target = rows.find((r) => String(r.id) === String(req.params.id)) || rows[0];
@@ -295,9 +353,19 @@ router.delete('/:id', auth, async (req, res, next) => {
     const rows = groupId
       ? await sql`DELETE FROM nios_class_entries WHERE nios_class_group_id = ${groupId} RETURNING *`
       : await sql`DELETE FROM nios_class_entries WHERE id = ${req.params.id} RETURNING *`;
+
+    // The class takes its timetable slot with it, mirroring the slot-side rule
+    // that deleting a slot deletes its class.
+    const slotIds = rows.map((r) => r.nios_timetable_slot_id).filter(Boolean);
+    let slotsRemoved = 0;
+    if (slotIds.length) {
+      const goneSlots = await sql`DELETE FROM nios_timetable_slots WHERE id = ANY(${slotIds}) RETURNING id`;
+      slotsRemoved = goneSlots.length;
+    }
+
     await logActivity(req.user.id, req.user.name, req.user.role, 'delete_nios_class', 'nios_class_entry', req.params.id,
-      `Deleted NIOS class: ${niosClassDetail(deletedCtx)}${groupId ? ` (+${rows.length - 1} linked)` : ''}`);
-    res.json({ message: 'Deleted.', count: rows.length });
+      `Deleted NIOS class: ${niosClassDetail(deletedCtx)}${groupId ? ` (+${rows.length - 1} linked)` : ''}${slotsRemoved ? ` and ${slotsRemoved} timetable slot${slotsRemoved > 1 ? 's' : ''}` : ''}`);
+    res.json({ message: 'Deleted.', count: rows.length, slots_removed: slotsRemoved });
   } catch (err) { next(err); }
 });
 
