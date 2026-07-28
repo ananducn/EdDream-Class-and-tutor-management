@@ -12,6 +12,7 @@ import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
 import { to12h } from '@/lib/time';
+import { takenLockReason } from '@/lib/editWindow';
 import { SkeletonCards } from '@/components/Skeletons';
 import {
   DropdownMenu,
@@ -984,7 +985,11 @@ export default function TimetableCalendarPage() {
 // ── SlotCard ──────────────────────────────────────────────────────────────────
 
 function SlotCard({ slot, onEdit, onSetStatus, onDelete }) {
+  const { isAdmin } = useAuth();
   const status = slot.class_taken_status || 'scheduled';
+  // A slot whose class is marked taken closes for editing after its window; the
+  // API refuses these anyway, so don't offer actions that would just 403.
+  const lock = takenLockReason(status, slot._date, isAdmin());
   const border = status === 'taken'
     ? 'border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950'
     : status === 'not_taken'
@@ -1008,12 +1013,13 @@ function SlotCard({ slot, onEdit, onSetStatus, onDelete }) {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               {status !== 'taken' && (
-                <DropdownMenuItem onClick={() => onSetStatus(slot, 'taken')}>
+                <DropdownMenuItem disabled={!!lock} onClick={() => onSetStatus(slot, 'taken')}>
                   Mark taken
                 </DropdownMenuItem>
               )}
               {status !== 'not_taken' && (
                 <DropdownMenuItem
+                  disabled={!!lock}
                   onClick={() => onSetStatus(slot, 'not_taken')}
                   className="text-rose-600 focus:text-rose-600 dark:text-rose-400 dark:focus:text-rose-400"
                 >
@@ -1021,15 +1027,16 @@ function SlotCard({ slot, onEdit, onSetStatus, onDelete }) {
                 </DropdownMenuItem>
               )}
               {status !== 'scheduled' && (
-                <DropdownMenuItem onClick={() => onSetStatus(slot, 'scheduled')}>
+                <DropdownMenuItem disabled={!!lock} onClick={() => onSetStatus(slot, 'scheduled')}>
                   Reset to scheduled
                 </DropdownMenuItem>
               )}
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => onEdit(slot)}>
+              <DropdownMenuItem disabled={!!lock} onClick={() => onEdit(slot)}>
                 Edit slot
               </DropdownMenuItem>
               <DropdownMenuItem
+                disabled={!!lock}
                 onClick={() => onDelete(slot)}
                 className="text-red-600 focus:text-red-600 dark:text-red-400 dark:focus:text-red-400"
               >
@@ -1112,7 +1119,7 @@ function WeeklyView({ dates, timetable, slotsForWeekDay, onAddSlot, onEditSlot, 
       <div className="grid grid-flow-col auto-cols-[minmax(260px,1fr)] divide-x divide-slate-200 dark:divide-slate-700 min-h-[420px]">
         {dates.map((date, i) => {
           const dayName = DAY_NAMES[i];
-          const slots = slotsForWeekDay(timetable, dayName).map((s) => ({ ...s, _timetableId: timetable.id }));
+          const slots = slotsForWeekDay(timetable, dayName).map((s) => ({ ...s, _timetableId: timetable.id, _date: toDateStr(date) }));
           const today = isToday(date);
           return (
             <div key={i} className={`p-2 space-y-2 ${today ? 'bg-indigo-50 dark:bg-indigo-950' : ''}`}>

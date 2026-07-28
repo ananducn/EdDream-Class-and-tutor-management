@@ -4,6 +4,7 @@ import { auth } from '../middleware/auth.js';
 import { logActivity } from '../middleware/logger.js';
 import { mondayOf, dayNameOf, timesOverlap, nowInZone, hoursBetween } from '../lib/week.js';
 import { normalizeSlotGroups } from '../lib/groups.js';
+import { takenEditLock } from '../lib/editWindow.js';
 
 // Hours are derived from the times whenever both are given, falling back to what
 // the caller sent only when they aren't. They feed the faculty hours report, so
@@ -373,8 +374,13 @@ router.put('/:id', auth, async (req, res, next) => {
       }
     }
 
-    const existing = await sql`SELECT class_group_id FROM class_entries WHERE id = ${req.params.id}`;
+    const existing = await sql`SELECT id, class_group_id, class_status, date FROM class_entries WHERE id = ${req.params.id}`;
     if (!existing[0]) return res.status(404).json({ error: 'Not found.' });
+
+    // A class already marked taken closes for editing after its window.
+    const locked = takenEditLock(existing[0], req.user.role);
+    if (locked) return res.status(403).json({ error: locked });
+
     const groupId = existing[0].class_group_id;
 
     let rows;
@@ -439,6 +445,10 @@ router.delete('/:id', auth, async (req, res, next) => {
     if (req.user.role !== 'admin' && !(existing[0].is_cancelled && isOwner)) {
       return res.status(403).json({ error: 'Forbidden.' });
     }
+    // Deleting is an edit as far as the taken-class window is concerned.
+    const lockedDel = takenEditLock(existing[0], req.user.role);
+    if (lockedDel) return res.status(403).json({ error: lockedDel });
+
     const deletedCtx = await classContext(req.params.id);
     // A grouped (common-subject) class is deleted as a whole across its batches.
     const groupId = existing[0].class_group_id;
