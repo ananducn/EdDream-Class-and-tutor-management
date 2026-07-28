@@ -15,6 +15,8 @@ import { SkeletonTable } from '@/components/Skeletons';
 import { useAuth } from '@/context/AuthContext';
 import client from '@/api/client';
 import { to12h } from '@/lib/time';
+import { takenLockReason } from '@/lib/editWindow';
+import LockedBadge, { LockHint } from '@/components/LockedBadge';
 import { defaultDateRange, describeDateRange } from '@/lib/dateRange';
 
 const emptyForm = {
@@ -519,7 +521,15 @@ export default function ClassesPage() {
                     {c.class_mode ? <StatusBadge status={c.class_mode} /> : '—'}
                   </TableCell>
                   <TableCell>
-                    <Select value={c.class_status || 'scheduled'} onValueChange={(v) => quickSetStatus(c, v)}>
+                    {takenLockReason(c.class_status, c.date, isAdmin()) && (
+                      <div className="mb-1"><LockedBadge reason={takenLockReason(c.class_status, c.date, isAdmin())} /></div>
+                    )}
+                    <LockHint reason={takenLockReason(c.class_status, c.date, isAdmin())}>
+                    <Select
+                      value={c.class_status || 'scheduled'}
+                      onValueChange={(v) => quickSetStatus(c, v)}
+                      disabled={!!takenLockReason(c.class_status, c.date, isAdmin())}
+                    >
                       <SelectTrigger className="h-7 w-32 text-xs"><SelectValue /></SelectTrigger>
                       <SelectContent>
                         <SelectItem value="scheduled">Scheduled</SelectItem>
@@ -527,19 +537,30 @@ export default function ClassesPage() {
                         <SelectItem value="not_taken">Not Taken</SelectItem>
                       </SelectContent>
                     </Select>
+                    </LockHint>
                   </TableCell>
                   <TableCell className="text-right space-x-2">
                     <Button size="sm" variant="outline" onClick={() => setViewDialog(c)}>View</Button>
-                    <Button size="sm" variant="outline" onClick={() => openEdit(c)}>Edit</Button>
-                    {isAdmin() && (
+                    <LockHint reason={takenLockReason(c.class_status, c.date, isAdmin())}>
                       <Button
                         size="sm"
                         variant="outline"
-                        className="text-red-600 dark:text-red-400 border-red-300 dark:border-red-700 hover:bg-red-50 dark:hover:bg-red-900"
-                        onClick={() => setDeleteTarget(c)}
-                      >
-                        Delete
-                      </Button>
+                        onClick={() => openEdit(c)}
+                        disabled={!!takenLockReason(c.class_status, c.date, isAdmin())}
+                      >Edit</Button>
+                    </LockHint>
+                    {isAdmin() && (
+                      <LockHint reason={takenLockReason(c.class_status, c.date, isAdmin())}>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="text-red-600 dark:text-red-400 border-red-300 dark:border-red-700 hover:bg-red-50 dark:hover:bg-red-900"
+                          onClick={() => setDeleteTarget(c)}
+                          disabled={!!takenLockReason(c.class_status, c.date, isAdmin())}
+                        >
+                          Delete
+                        </Button>
+                      </LockHint>
                     )}
                   </TableCell>
                 </TableRow>

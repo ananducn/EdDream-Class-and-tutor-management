@@ -4,6 +4,7 @@ import { auth } from '../middleware/auth.js';
 import { logActivity } from '../middleware/logger.js';
 import { DAYS, dateForSlot, nowInZone } from '../lib/week.js';
 import { normalizeSlotGroups, normalizeClassGroups } from '../lib/groups.js';
+import { takenEditLock } from '../lib/editWindow.js';
 
 const router = express.Router();
 
@@ -417,6 +418,17 @@ router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
   try {
     const { day_of_week, start_time, end_time, faculty_id, subject_id, notes, class_taken_status, batch_ids } = req.body;
 
+    // A slot edit writes straight through to its class, so the taken-class editing
+    // window has to be enforced here too — otherwise the grid's status toggle
+    // would be a way around it.
+    const linkedForEdit = await sql`
+      SELECT class_status, date FROM class_entries WHERE timetable_slot_id = ${req.params.slotId}
+    `;
+    for (const cls of linkedForEdit) {
+      const locked = takenEditLock(cls, req.user.role);
+      if (locked) return res.status(403).json({ error: locked });
+    }
+
     if (class_taken_status === 'taken') {
       const [tt, existing] = await Promise.all([
         sql`SELECT to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date FROM timetables WHERE id = ${req.params.id}`,
@@ -485,6 +497,15 @@ router.delete('/:id/slots/:slotId', auth, async (req, res, next) => {
     // A common class is removed from every batch it was shared with.
     const ids = await groupSlotIds(req.params.slotId, req.params.id);
     if (ids.length === 0) return res.status(404).json({ error: 'Not found.' });
+
+    // Deleting a slot deletes its classes, so a locked taken class blocks it.
+    const linkedForDelete = await sql`
+      SELECT class_status, date FROM class_entries WHERE timetable_slot_id = ANY(${ids})
+    `;
+    for (const cls of linkedForDelete) {
+      const locked = takenEditLock(cls, req.user.role);
+      if (locked) return res.status(403).json({ error: locked });
+    }
     const classesRemoved = await deleteClassesForSlots(ids);
     const rows = await sql`DELETE FROM timetable_slots WHERE id = ANY(${ids}) RETURNING *`;
     const primary = rows.find((r) => String(r.id) === String(req.params.slotId)) || rows[0];

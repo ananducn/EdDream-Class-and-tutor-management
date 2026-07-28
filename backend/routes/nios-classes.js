@@ -3,6 +3,7 @@ import { sql } from '../db.js';
 import { auth } from '../middleware/auth.js';
 import { logActivity } from '../middleware/logger.js';
 import { nowInZone, hoursBetween, mondayOf, dayNameOf } from '../lib/week.js';
+import { takenEditLock } from '../lib/editWindow.js';
 
 // Hours feed the faculty hours report, so derive them from the times rather than
 // trusting whatever the caller posted.
@@ -290,8 +291,12 @@ router.put('/:id', auth, async (req, res, next) => {
       }
     }
 
-    const existing = await sql`SELECT nios_class_group_id FROM nios_class_entries WHERE id = ${req.params.id}`;
+    const existing = await sql`SELECT id, nios_class_group_id, class_status, date FROM nios_class_entries WHERE id = ${req.params.id}`;
     if (!existing[0]) return res.status(404).json({ error: 'Not found.' });
+
+    // A class already marked taken closes for editing after its window.
+    const locked = takenEditLock(existing[0], req.user.role);
+    if (locked) return res.status(403).json({ error: locked });
     const groupId = existing[0].nios_class_group_id;
 
     let rows;
@@ -348,6 +353,10 @@ router.delete('/:id', auth, async (req, res, next) => {
     if (req.user.role !== 'admin' && !(existing[0].is_cancelled && isOwner)) {
       return res.status(403).json({ error: 'Forbidden.' });
     }
+    // Deleting is an edit as far as the taken-class window is concerned.
+    const lockedDel = takenEditLock(existing[0], req.user.role);
+    if (lockedDel) return res.status(403).json({ error: lockedDel });
+
     const deletedCtx = await niosClassContext(req.params.id);
     const groupId = existing[0].nios_class_group_id;
     const rows = groupId

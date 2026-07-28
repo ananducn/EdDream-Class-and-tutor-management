@@ -11,6 +11,8 @@ import { useAuth } from '@/context/AuthContext';
 import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
 import { to12h } from '@/lib/time';
+import { takenLockReason } from '@/lib/editWindow';
+import LockedBadge from '@/components/LockedBadge';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
   DropdownMenuItem, DropdownMenuSeparator,
@@ -602,7 +604,11 @@ export default function NIOSTimetableCalendarPage() {
 // ── SlotCard ──────────────────────────────────────────────────────────────────
 
 function SlotCard({ slot, onEdit, onSetStatus, onDelete }) {
+  const { isAdmin } = useAuth();
   const status = slot.class_taken_status || 'scheduled';
+  // A slot whose class is marked taken closes for editing after its window; the
+  // API refuses these anyway, so don't offer actions that would just 403.
+  const lock = takenLockReason(status, slot._date, isAdmin());
   const border = status === 'taken'
     ? 'border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950'
     : status === 'not_taken'
@@ -612,23 +618,26 @@ function SlotCard({ slot, onEdit, onSetStatus, onDelete }) {
   return (
     <div className={`rounded-lg border p-3 space-y-1.5 ${border}`}>
       <div className="flex items-center justify-between gap-2">
-        <StatusBadge status={status} />
+        <div className="flex items-center gap-1.5 min-w-0">
+          <StatusBadge status={status} />
+          <LockedBadge reason={lock} />
+        </div>
         <div className="shrink-0">
           <DropdownMenu>
             <DropdownMenuTrigger className="w-6 h-6 flex items-center justify-center rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:text-slate-500 dark:hover:text-slate-200 dark:hover:bg-slate-700 transition-colors text-base leading-none" title="Actions">
               ⋯
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              {status !== 'taken' && <DropdownMenuItem onClick={() => onSetStatus(slot, 'taken')}>Mark taken</DropdownMenuItem>}
+              {status !== 'taken' && <DropdownMenuItem disabled={!!lock} onClick={() => onSetStatus(slot, 'taken')}>Mark taken</DropdownMenuItem>}
               {status !== 'not_taken' && (
-                <DropdownMenuItem onClick={() => onSetStatus(slot, 'not_taken')} className="text-rose-600 focus:text-rose-600 dark:text-rose-400">
+                <DropdownMenuItem disabled={!!lock} onClick={() => onSetStatus(slot, 'not_taken')} className="text-rose-600 focus:text-rose-600 dark:text-rose-400">
                   Mark not taken
                 </DropdownMenuItem>
               )}
-              {status !== 'scheduled' && <DropdownMenuItem onClick={() => onSetStatus(slot, 'scheduled')}>Reset to scheduled</DropdownMenuItem>}
+              {status !== 'scheduled' && <DropdownMenuItem disabled={!!lock} onClick={() => onSetStatus(slot, 'scheduled')}>Reset to scheduled</DropdownMenuItem>}
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => onEdit(slot)}>Edit slot</DropdownMenuItem>
-              <DropdownMenuItem onClick={() => onDelete(slot)} className="text-red-600 focus:text-red-600 dark:text-red-400">Remove slot</DropdownMenuItem>
+              <DropdownMenuItem disabled={!!lock} onClick={() => onEdit(slot)}>Edit slot</DropdownMenuItem>
+              <DropdownMenuItem disabled={!!lock} onClick={() => onDelete(slot)} className="text-red-600 focus:text-red-600 dark:text-red-400">Remove slot</DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
@@ -683,7 +692,7 @@ function WeeklyView({ dates, timetable, slotsForWeekDay, onAddSlot, onEditSlot, 
         <div className="grid grid-flow-col auto-cols-[minmax(260px,1fr)] divide-x divide-slate-200 dark:divide-slate-700 min-h-[420px]">
           {dates.map((date, i) => {
             const dayName = DAY_NAMES[i];
-            const slots = slotsForWeekDay(timetable, dayName).map((s) => ({ ...s, _timetableId: timetable.id }));
+            const slots = slotsForWeekDay(timetable, dayName).map((s) => ({ ...s, _timetableId: timetable.id, _date: toDateStr(date) }));
             const today = isToday(date);
             return (
               <div key={i} className={`p-2 space-y-2 ${today ? 'bg-indigo-50 dark:bg-indigo-950' : ''}`}>

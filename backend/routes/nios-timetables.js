@@ -3,6 +3,7 @@ import { sql } from '../db.js';
 import { auth } from '../middleware/auth.js';
 import { logActivity } from '../middleware/logger.js';
 import { DAYS, dateForSlot, nowInZone } from '../lib/week.js';
+import { takenEditLock } from '../lib/editWindow.js';
 
 const router = express.Router();
 
@@ -292,6 +293,16 @@ router.post('/:id/slots', auth, async (req, res, next) => {
 
 router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
   try {
+    // A slot edit writes through to its class, so the taken-class editing window
+    // is enforced here too — otherwise the grid's status toggle would bypass it.
+    const linkedForEdit = await sql`
+      SELECT class_status, date FROM nios_class_entries WHERE nios_timetable_slot_id = ${req.params.slotId}
+    `;
+    for (const cls of linkedForEdit) {
+      const locked = takenEditLock(cls, req.user.role);
+      if (locked) return res.status(403).json({ error: locked });
+    }
+
     const { day_of_week, start_time, end_time, faculty_id, nios_subject_id, nios_chapter_ids, notes, class_taken_status } = req.body;
 
     if (class_taken_status === 'taken') {
@@ -350,6 +361,15 @@ router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
 
 router.delete('/:id/slots/:slotId', auth, async (req, res, next) => {
   try {
+    // Deleting a slot deletes its classes, so a locked taken class blocks it.
+    const linkedForDelete = await sql`
+      SELECT class_status, date FROM nios_class_entries WHERE nios_timetable_slot_id = ${req.params.slotId}
+    `;
+    for (const cls of linkedForDelete) {
+      const locked = takenEditLock(cls, req.user.role);
+      if (locked) return res.status(403).json({ error: locked });
+    }
+
     const classesRemoved = await deleteNiosClassesForSlots([Number(req.params.slotId)]);
     const rows = await sql`
       DELETE FROM nios_timetable_slots WHERE id = ${req.params.slotId} AND nios_timetable_id = ${req.params.id} RETURNING *
