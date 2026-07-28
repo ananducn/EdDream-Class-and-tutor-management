@@ -372,11 +372,14 @@ export default function ClassOverviewPage() {
             </div>
           </div>
 
-          <p className="text-xs text-slate-500 dark:text-slate-400 pt-1">
-            {hasLoaded
-              ? `${describeDateRange(appliedRange.from, appliedRange.to)} Change the dates to see other periods.`
-              : `${describeDateRange(filters.date_from, filters.date_to)} Click Apply to load.`}
-          </p>
+          {/* Only once results exist — before Apply nothing is loaded, so "Showing
+              …" would be untrue, and the empty state below already says to click
+              Apply. */}
+          {hasLoaded && (
+            <p className="text-xs text-slate-500 dark:text-slate-400 pt-1">
+              {describeDateRange(appliedRange.from, appliedRange.to)} Change the dates to see other periods.
+            </p>
+          )}
           <div className="flex items-center gap-2 pt-1">
             <Button onClick={applyFilters} disabled={loading}>
               {loading ? 'Loading…' : 'Apply'}
