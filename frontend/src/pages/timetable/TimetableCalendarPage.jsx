@@ -13,6 +13,7 @@ import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
 import { to12h } from '@/lib/time';
 import { takenLockReason } from '@/lib/editWindow';
+import LockedBadge from '@/components/LockedBadge';
 import { SkeletonCards } from '@/components/Skeletons';
 import {
   DropdownMenu,
@@ -1001,7 +1002,10 @@ function SlotCard({ slot, onEdit, onSetStatus, onDelete }) {
       {/* Status + actions on their own row so the faculty/subject names below get
           the full card width and stay readable instead of being squeezed. */}
       <div className="flex items-center justify-between gap-2">
-        <StatusBadge status={status} />
+        <div className="flex items-center gap-1.5 min-w-0">
+          <StatusBadge status={status} />
+          <LockedBadge reason={lock} />
+        </div>
 
         <div className="shrink-0">
           <DropdownMenu>

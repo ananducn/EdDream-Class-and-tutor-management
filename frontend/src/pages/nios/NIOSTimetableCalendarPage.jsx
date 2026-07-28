@@ -12,6 +12,7 @@ import { useConfirm } from '@/context/ConfirmContext';
 import client from '@/api/client';
 import { to12h } from '@/lib/time';
 import { takenLockReason } from '@/lib/editWindow';
+import LockedBadge from '@/components/LockedBadge';
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent,
   DropdownMenuItem, DropdownMenuSeparator,
@@ -617,7 +618,10 @@ function SlotCard({ slot, onEdit, onSetStatus, onDelete }) {
   return (
     <div className={`rounded-lg border p-3 space-y-1.5 ${border}`}>
       <div className="flex items-center justify-between gap-2">
-        <StatusBadge status={status} />
+        <div className="flex items-center gap-1.5 min-w-0">
+          <StatusBadge status={status} />
+          <LockedBadge reason={lock} />
+        </div>
         <div className="shrink-0">
           <DropdownMenu>
             <DropdownMenuTrigger className="w-6 h-6 flex items-center justify-center rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 dark:text-slate-500 dark:hover:text-slate-200 dark:hover:bg-slate-700 transition-colors text-base leading-none" title="Actions">
