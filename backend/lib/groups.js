@@ -29,3 +29,5 @@ async function normalize(table, column, groupIds) {
 
 export const normalizeSlotGroups = (groupIds) => normalize('timetable_slots', 'slot_group_id', groupIds);
 export const normalizeClassGroups = (groupIds) => normalize('class_entries', 'class_group_id', groupIds);
+export const normalizeNiosSlotGroups = (groupIds) => normalize('nios_timetable_slots', 'nios_slot_group_id', groupIds);
+export const normalizeNiosClassGroups = (groupIds) => normalize('nios_class_entries', 'nios_class_group_id', groupIds);

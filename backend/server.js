@@ -386,6 +386,12 @@ const migrations = [
   () => sql`ALTER TABLE nios_chapters DROP COLUMN IF EXISTS nios_university_subject_id`,
   () => sql`ALTER TABLE nios_class_entries ADD COLUMN IF NOT EXISTS nios_class_group_id INTEGER`,
 
+  // A NIOS common class is the same slot in several batches' grids for one week.
+  // Now that a subject can be shared across streams, the timetable needs the same
+  // fan-out the Classes page already has. Group id is the first member's own id,
+  // with no FK behind it — see lib/groups.js for the repair on partial deletes.
+  () => sql`ALTER TABLE nios_timetable_slots ADD COLUMN IF NOT EXISTS nios_slot_group_id INTEGER`,
+
   // ── Performance indexes ──────────────────────────────────────────────────────
   // Postgres does NOT auto-index foreign keys, so the app's filters/joins were
   // doing full table scans. These index the columns actually used in WHERE/JOIN/
@@ -422,6 +428,7 @@ const migrations = [
   () => sql`CREATE INDEX IF NOT EXISTS idx_nios_batches_stream ON nios_batches (nios_stream_id)`,
   () => sql`CREATE INDEX IF NOT EXISTS idx_nios_timetables_batch ON nios_timetables (nios_university_id, nios_batch_id, week_start_date)`,
   () => sql`CREATE INDEX IF NOT EXISTS idx_nios_tt_slots_timetable ON nios_timetable_slots (nios_timetable_id)`,
+  () => sql`CREATE INDEX IF NOT EXISTS idx_nios_tt_slots_group ON nios_timetable_slots (nios_slot_group_id)`,
   () => sql`CREATE INDEX IF NOT EXISTS idx_nios_class_chapters_chapter ON nios_class_chapters (nios_chapter_id)`,
   () => sql`CREATE INDEX IF NOT EXISTS idx_nios_tt_slot_chapters_chapter ON nios_timetable_slot_chapters (nios_chapter_id)`,
   () => sql`CREATE INDEX IF NOT EXISTS idx_nios_resources_chapter ON nios_resources (nios_chapter_id)`,

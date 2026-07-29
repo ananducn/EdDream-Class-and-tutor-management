@@ -158,6 +158,50 @@ function ChapterPicker({ subjects, chaptersBySubject, ensureChapters, selectedId
   );
 }
 
+// Batches this slot can also be added to. A slot's chapters can span several
+// subjects, so a batch only qualifies if its stream carries EVERY one of them —
+// otherwise a Commerce-only subject could land on a Science batch's grid.
+function CommonBatchPicker({ subjectIds, batches, streamSubjects, currentBatchId, selected, onToggle }) {
+  if (subjectIds.length === 0) {
+    return <p className="text-xs text-slate-400">Pick a chapter first — the batches on offer depend on which subjects it covers.</p>;
+  }
+  const subjectsByStream = new Map();
+  for (const ss of streamSubjects) {
+    const k = String(ss.nios_stream_id);
+    if (!subjectsByStream.has(k)) subjectsByStream.set(k, new Set());
+    subjectsByStream.get(k).add(String(ss.nios_subject_id));
+  }
+  const eligible = batches.filter((b) => {
+    if (String(b.id) === String(currentBatchId)) return false;
+    const carried = subjectsByStream.get(String(b.nios_stream_id));
+    return carried && subjectIds.every((sid) => carried.has(String(sid)));
+  });
+  if (eligible.length === 0) {
+    return <p className="text-xs text-slate-400">No other batch shares every subject in this slot.</p>;
+  }
+  const streamNames = [...new Set(eligible.map((b) => b.stream_name || 'No stream'))].sort();
+  return (
+    <div className="space-y-3 rounded-md border border-slate-200 dark:border-slate-700 p-3 max-h-48 overflow-y-auto">
+      {streamNames.map((name) => (
+        <div key={name} className="space-y-1">
+          <p className="text-xs font-semibold text-slate-500 dark:text-slate-400">{name}</p>
+          {eligible.filter((b) => (b.stream_name || 'No stream') === name).map((b) => (
+            <label key={b.id} className="flex items-center gap-2 text-sm cursor-pointer pl-1 text-slate-700 dark:text-slate-300">
+              <input
+                type="checkbox"
+                className="h-4 w-4"
+                checked={selected.includes(String(b.id))}
+                onChange={() => onToggle(b.id)}
+              />
+              {b.name}
+            </label>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function NIOSTimetableCalendarPage() {
@@ -185,6 +229,14 @@ export default function NIOSTimetableCalendarPage() {
   const [editSlotForm, setEditSlotForm] = useState(emptySlotForm);
   const [savingEditSlot, setSavingEditSlot] = useState(false);
 
+  // Common class: the same slot in several batches' grids for this week.
+  const [allBatches, setAllBatches] = useState([]);
+  const [streamSubjects, setStreamSubjects] = useState([]);
+  const [commonSlot, setCommonSlot] = useState(false);
+  const [sharedBatchIds, setSharedBatchIds] = useState([]);
+  const [editCommonSlot, setEditCommonSlot] = useState(false);
+  const [editSharedBatchIds, setEditSharedBatchIds] = useState([]);
+
   const [busy, setBusy] = useState(false);
 
   const weekStartStr = toDateStr(getWeekStart(currentDate));
@@ -201,16 +253,18 @@ export default function NIOSTimetableCalendarPage() {
       ]);
       setFaculty(fRes.data);
       setUniversityName(uRes.data.find((u) => String(u.id) === uniId)?.name || '');
+      setAllBatches(bRes.data);
       const batch = bRes.data.find((b) => String(b.id) === batchId);
       setBatchName(batch?.name || '');
+      // Every placement in the university, so the common-class picker can tell
+      // which other batches carry the subjects this slot covers.
+      const allSs = await client.get('/nios/stream-subjects', { params: { nios_university_id: uniId } });
+      setStreamSubjects(allSs.data);
       // The syllabus belongs to the batch's stream, so only that stream's
       // subjects can be scheduled for this batch.
-      if (batch?.nios_stream_id) {
-        const ssRes = await client.get('/nios/stream-subjects', { params: { nios_stream_id: batch.nios_stream_id } });
-        setSubjects(ssRes.data);
-      } else {
-        setSubjects([]);
-      }
+      setSubjects(batch?.nios_stream_id
+        ? allSs.data.filter((ss) => String(ss.nios_stream_id) === String(batch.nios_stream_id))
+        : []);
     } catch {
       toast.error('Failed to load reference data.');
     }
@@ -336,8 +390,20 @@ export default function NIOSTimetableCalendarPage() {
 
   // ── Add slot ──────────────────────────────────────────────────────────────
 
+  // Which subjects a set of chapter ids belongs to — drives the common-class
+  // batch picker, since a batch must carry all of them to qualify.
+  const subjectIdsForChapters = useCallback((chapterIds) => {
+    const ids = new Set();
+    for (const [subjectId, chapters] of Object.entries(chaptersBySubject)) {
+      if (chapters.some((ch) => chapterIds.includes(String(ch.id)))) ids.add(subjectId);
+    }
+    return [...ids];
+  }, [chaptersBySubject]);
+
   function openAddSlot(prefillDay) {
     setSlotForm({ ...emptySlotForm, day_of_week: prefillDay || '' });
+    setCommonSlot(false);
+    setSharedBatchIds([]);
     setSlotOpen(true);
   }
 
@@ -346,10 +412,16 @@ export default function NIOSTimetableCalendarPage() {
     setSavingSlot(true);
     try {
       const tt = await ensureWeekTimetable();
-      await client.post(`/nios/timetables/${tt.id}/slots`, slotForm);
-      toast.success('Slot added.');
+      const payload = commonSlot && sharedBatchIds.length > 0
+        ? { ...slotForm, nios_batch_ids: sharedBatchIds.map(Number) }
+        : slotForm;
+      const res = await client.post(`/nios/timetables/${tt.id}/slots`, payload);
+      const n = res.data?.shared_count || 1;
+      toast.success(n > 1 ? `Slot added to ${n} batches.` : 'Slot added.');
       setSlotOpen(false);
       setSlotForm(emptySlotForm);
+      setCommonSlot(false);
+      setSharedBatchIds([]);
       await loadTimetables();
     } catch (err) {
       toast.error(err.response?.data?.error || 'Something went wrong.');
@@ -359,9 +431,12 @@ export default function NIOSTimetableCalendarPage() {
   }
 
   async function handleDeleteSlot(slot) {
+    const shared = slot.shared_batches || [];
     const ok = await confirm({
       title: 'Remove slot?',
-      description: 'Are you sure you want to remove this slot from the timetable?',
+      description: shared.length
+        ? `This is a common class. Removing it also removes it from ${shared.join(', ')}, along with any linked classes.`
+        : 'Are you sure you want to remove this slot from the timetable?',
       confirmLabel: 'Remove',
       destructive: true,
     });
@@ -379,6 +454,8 @@ export default function NIOSTimetableCalendarPage() {
 
   async function openEditSlot(slot) {
     setEditSlotTarget({ slot, timetableId: slot._timetableId });
+    setEditCommonSlot((slot.shared_batch_ids || []).length > 0);
+    setEditSharedBatchIds((slot.shared_batch_ids || []).map(String));
     setEditSlotForm({
       day_of_week: slot.day_of_week || '',
       start_time: slot.start_time?.slice(0, 5) || '',
@@ -398,11 +475,14 @@ export default function NIOSTimetableCalendarPage() {
     if (!editSlotTarget) return;
     setSavingEditSlot(true);
     try {
-      await client.put(
+      // Sending nios_batch_ids re-reconciles who the slot is shared with; the
+      // toggle off means "no other batches", which is an empty array, not absent.
+      const res = await client.put(
         `/nios/timetables/${editSlotTarget.timetableId}/slots/${editSlotTarget.slot.id}`,
-        editSlotForm
+        { ...editSlotForm, nios_batch_ids: editCommonSlot ? editSharedBatchIds.map(Number) : [] }
       );
-      toast.success('Slot updated.');
+      const n = res.data?.shared_count || 1;
+      toast.success(n > 1 ? `Slot updated across ${n} batches.` : 'Slot updated.');
       setEditSlotOpen(false);
       setEditSlotTarget(null);
       await loadTimetables();
@@ -540,6 +620,28 @@ export default function NIOSTimetableCalendarPage() {
               selectedIds={slotForm.nios_chapter_ids}
               onToggle={(id) => setSlotForm((f) => ({ ...f, nios_chapter_ids: toggleId(f.nios_chapter_ids, id) }))}
             />
+            {/* Common class — the same slot in several batches' grids for this week. */}
+            <div className="space-y-2 rounded-md border border-slate-200 dark:border-slate-700 p-3">
+              <label className="flex items-center gap-2 text-sm cursor-pointer text-slate-700 dark:text-slate-300">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={commonSlot}
+                  onChange={(e) => { setCommonSlot(e.target.checked); if (!e.target.checked) setSharedBatchIds([]); }}
+                />
+                Common class — also add to other batches
+              </label>
+              {commonSlot && (
+                <CommonBatchPicker
+                  subjectIds={subjectIdsForChapters(slotForm.nios_chapter_ids)}
+                  batches={allBatches}
+                  streamSubjects={streamSubjects}
+                  currentBatchId={batchId}
+                  selected={sharedBatchIds}
+                  onToggle={(id) => setSharedBatchIds((prev) => toggleId(prev, id))}
+                />
+              )}
+            </div>
             <div className="space-y-1.5">
               <Label>Notes</Label>
               <Input value={slotForm.notes} onChange={(e) => setSlotForm({ ...slotForm, notes: e.target.value })} />
@@ -590,6 +692,37 @@ export default function NIOSTimetableCalendarPage() {
               selectedIds={editSlotForm.nios_chapter_ids}
               onToggle={(id) => setEditSlotForm((f) => ({ ...f, nios_chapter_ids: toggleId(f.nios_chapter_ids, id) }))}
             />
+            <div className="space-y-2 rounded-md border border-slate-200 dark:border-slate-700 p-3">
+              <label className="flex items-center gap-2 text-sm cursor-pointer text-slate-700 dark:text-slate-300">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4"
+                  checked={editCommonSlot}
+                  onChange={(e) => { setEditCommonSlot(e.target.checked); if (!e.target.checked) setEditSharedBatchIds([]); }}
+                />
+                Common class — shared with other batches
+              </label>
+              {editSlotTarget?.slot?.shared_batches?.length > 0 && (
+                <p className="text-xs text-indigo-600 dark:text-indigo-400">
+                  ⧉ These changes also apply to {editSlotTarget.slot.shared_batches.join(', ')}.
+                </p>
+              )}
+              {editCommonSlot && (
+                <CommonBatchPicker
+                  subjectIds={subjectIdsForChapters(editSlotForm.nios_chapter_ids)}
+                  batches={allBatches}
+                  streamSubjects={streamSubjects}
+                  currentBatchId={batchId}
+                  selected={editSharedBatchIds}
+                  onToggle={(id) => setEditSharedBatchIds((prev) => toggleId(prev, id))}
+                />
+              )}
+              {editCommonSlot && editSharedBatchIds.length === 0 && (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  No batches ticked — saving will leave this slot in this batch only.
+                </p>
+              )}
+            </div>
             <div className="space-y-1.5">
               <Label>Notes</Label>
               <Input value={editSlotForm.notes} onChange={(e) => setEditSlotForm({ ...editSlotForm, notes: e.target.value })} />
