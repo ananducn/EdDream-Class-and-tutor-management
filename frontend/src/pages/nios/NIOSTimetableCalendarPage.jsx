@@ -194,17 +194,23 @@ export default function NIOSTimetableCalendarPage() {
 
   async function loadDropdowns() {
     try {
-      const [fRes, usRes, uRes, bRes] = await Promise.all([
+      const [fRes, uRes, bRes] = await Promise.all([
         client.get('/faculty'),
-        // Chapters hang off the university's shared syllabus now, not the batch.
-        client.get('/nios/university-subjects', { params: { nios_university_id: uniId } }),
         client.get('/nios/universities'),
         client.get('/nios/batches', { params: { nios_university_id: uniId } }),
       ]);
       setFaculty(fRes.data);
-      setSubjects(usRes.data);
       setUniversityName(uRes.data.find((u) => String(u.id) === uniId)?.name || '');
-      setBatchName(bRes.data.find((b) => String(b.id) === batchId)?.name || '');
+      const batch = bRes.data.find((b) => String(b.id) === batchId);
+      setBatchName(batch?.name || '');
+      // The syllabus belongs to the batch's stream, so only that stream's
+      // subjects can be scheduled for this batch.
+      if (batch?.nios_stream_id) {
+        const ssRes = await client.get('/nios/stream-subjects', { params: { nios_stream_id: batch.nios_stream_id } });
+        setSubjects(ssRes.data);
+      } else {
+        setSubjects([]);
+      }
     } catch {
       toast.error('Failed to load reference data.');
     }
@@ -323,7 +329,7 @@ export default function NIOSTimetableCalendarPage() {
     const us = subjects.find((s) => String(s.nios_subject_id) === String(subjectId));
     if (!us) return;
     try {
-      const res = await client.get('/nios/chapters', { params: { nios_university_subject_id: us.id } });
+      const res = await client.get('/nios/chapters', { params: { nios_stream_subject_id: us.id } });
       setChaptersBySubject((prev) => ({ ...prev, [subjectId]: res.data }));
     } catch { /**/ }
   }

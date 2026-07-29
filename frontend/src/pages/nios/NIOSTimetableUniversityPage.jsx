@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import client from '@/api/client';
 import { SkeletonCards } from '@/components/Skeletons';
 
@@ -13,25 +14,28 @@ export default function NIOSTimetableUniversityPage() {
   const navigate = useNavigate();
 
   const [universityName, setUniversityName] = useState('');
+  const [streams, setStreams] = useState([]);
   const [batches, setBatches] = useState([]);
   const [timetableCountByBatch, setTimetableCountByBatch] = useState({});
   const [loading, setLoading] = useState(true);
 
-  // Batch creation lives here now — a NIOS batch is a cohort of the university
-  // that inherits the university's shared syllabus.
+  // Batch creation lives here now — a NIOS batch is a cohort of one stream, and
+  // inherits that stream's syllabus.
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [form, setForm] = useState({ name: '', year: '' });
+  const [form, setForm] = useState({ name: '', year: '', nios_stream_id: '' });
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
     try {
-      const [uRes, bRes, tRes] = await Promise.all([
+      const [uRes, sRes, bRes, tRes] = await Promise.all([
         client.get('/nios/universities'),
+        client.get('/nios/streams', { params: { nios_university_id: uniId } }),
         client.get('/nios/batches', { params: { nios_university_id: uniId } }),
         client.get('/nios/timetables', { params: { nios_university_id: uniId } }),
       ]);
       const uni = uRes.data.find((u) => String(u.id) === uniId);
       setUniversityName(uni?.name || '');
+      setStreams(sRes.data);
       setBatches(bRes.data);
       const tc = {};
       tRes.data.forEach((t) => {
@@ -49,12 +53,13 @@ export default function NIOSTimetableUniversityPage() {
 
   async function handleCreateBatch() {
     if (!form.name) { toast.error('Batch name is required.'); return; }
+    if (!form.nios_stream_id) { toast.error('Stream is required.'); return; }
     setSaving(true);
     try {
-      await client.post('/nios/batches', { nios_university_id: uniId, name: form.name, year: form.year || null });
+      await client.post('/nios/batches', { nios_stream_id: form.nios_stream_id, name: form.name, year: form.year || null });
       toast.success('Batch created.');
       setDialogOpen(false);
-      setForm({ name: '', year: '' });
+      setForm({ name: '', year: '', nios_stream_id: '' });
       load();
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to create batch.');
@@ -85,9 +90,13 @@ export default function NIOSTimetableUniversityPage() {
         <section className="space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">Batches</h2>
-            <Button size="sm" onClick={() => { setForm({ name: '', year: '' }); setDialogOpen(true); }}>+ Add Batch</Button>
+            <Button size="sm" disabled={streams.length === 0} onClick={() => { setForm({ name: '', year: '', nios_stream_id: '' }); setDialogOpen(true); }}>+ Add Batch</Button>
           </div>
-          {batches.length === 0 ? (
+          {streams.length === 0 ? (
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              No streams yet. Add a stream under this university in NIOS Curriculum first — a batch belongs to a stream.
+            </p>
+          ) : batches.length === 0 ? (
             <p className="text-sm text-slate-500 dark:text-slate-400">
               No batches yet. Add a batch to start scheduling its timetable.
             </p>
@@ -106,9 +115,9 @@ export default function NIOSTimetableUniversityPage() {
                         <p className="font-medium text-slate-900 dark:text-slate-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors truncate">
                           {batch.name}
                         </p>
-                        {batch.year && (
-                          <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{batch.year}</p>
-                        )}
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                          {[batch.stream_name, batch.year].filter(Boolean).join(' · ')}
+                        </p>
                         <div className="flex gap-2 mt-2 flex-wrap">
                           <span className={`text-xs px-2 py-0.5 rounded-full ${
                             tc > 0
@@ -135,6 +144,16 @@ export default function NIOSTimetableUniversityPage() {
         <DialogContent className="sm:max-w-sm">
           <DialogHeader><DialogTitle>Add Batch</DialogTitle></DialogHeader>
           <div className="space-y-4 py-2">
+            <div className="space-y-1">
+              <Label>Stream *</Label>
+              <Select value={form.nios_stream_id} onValueChange={(v) => setForm({ ...form, nios_stream_id: v })}>
+                <SelectTrigger className="w-full"><SelectValue placeholder="Select a stream" /></SelectTrigger>
+                <SelectContent>
+                  {streams.map((st) => <SelectItem key={st.id} value={String(st.id)}>{st.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-slate-400 mt-1">The batch inherits this stream's subjects.</p>
+            </div>
             <div className="space-y-1">
               <Label>Batch Name *</Label>
               <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="e.g. Science Group" />

@@ -5,26 +5,25 @@ import { logActivity } from '../middleware/logger.js';
 
 const router = express.Router();
 
-// NIOS chapters now root on the SUBJECT (shared across every university the
-// subject is placed in). The API still accepts a placement id
-// (nios_university_subject_id) for backward compatibility and resolves it to the
-// subject.
-async function subjectForPlacement(niosUniversitySubjectId) {
-  const rows = await sql`SELECT nios_subject_id FROM nios_university_subjects WHERE id = ${niosUniversitySubjectId}`;
+// NIOS chapters root on the SUBJECT (shared across every stream the subject is
+// placed in). The API also accepts a placement id (nios_stream_subject_id) and
+// resolves it to the subject.
+async function subjectForPlacement(niosStreamSubjectId) {
+  const rows = await sql`SELECT nios_subject_id FROM nios_stream_subjects WHERE id = ${niosStreamSubjectId}`;
   return rows[0]?.nios_subject_id ?? null;
 }
 
-async function resolveSubjectId({ nios_subject_id, nios_university_subject_id }) {
+async function resolveSubjectId({ nios_subject_id, nios_stream_subject_id }) {
   if (nios_subject_id) return Number(nios_subject_id);
-  if (nios_university_subject_id) return subjectForPlacement(nios_university_subject_id);
+  if (nios_stream_subject_id) return subjectForPlacement(nios_stream_subject_id);
   return null;
 }
 
 router.get('/', auth, async (req, res, next) => {
   try {
-    const { nios_university_subject_id, nios_subject_id, include_inactive } = req.query;
-    const subjectId = await resolveSubjectId({ nios_subject_id, nios_university_subject_id });
-    if (!subjectId) return res.status(400).json({ error: 'nios_subject_id or nios_university_subject_id is required.' });
+    const { nios_stream_subject_id, nios_subject_id, include_inactive } = req.query;
+    const subjectId = await resolveSubjectId({ nios_subject_id, nios_stream_subject_id });
+    if (!subjectId) return res.status(400).json({ error: 'nios_subject_id or nios_stream_subject_id is required.' });
     const rows = include_inactive === 'true'
       ? await sql`
           SELECT c.*, u.name AS created_by_name
@@ -48,7 +47,7 @@ router.get('/:id', auth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// A subject can be common (linked to several universities), so the "place" is
+// A subject can be common (linked to several streams), so the "place" is
 // just the subject name.
 async function subjectName(subjectId) {
   const rows = await sql`SELECT name FROM nios_subjects WHERE id = ${subjectId}`;
@@ -61,10 +60,10 @@ function niosChapterDetail(title, name) {
 
 router.post('/', auth, async (req, res, next) => {
   try {
-    const { nios_university_subject_id, nios_subject_id, title, description, chapter_order } = req.body;
+    const { nios_stream_subject_id, nios_subject_id, title, description, chapter_order } = req.body;
     if (!title) return res.status(400).json({ error: 'Title is required.' });
-    const subjectId = await resolveSubjectId({ nios_subject_id, nios_university_subject_id });
-    if (!subjectId) return res.status(400).json({ error: 'nios_subject_id or nios_university_subject_id is required.' });
+    const subjectId = await resolveSubjectId({ nios_subject_id, nios_stream_subject_id });
+    if (!subjectId) return res.status(400).json({ error: 'nios_subject_id or nios_stream_subject_id is required.' });
     const rows = await sql`
       INSERT INTO nios_chapters (nios_subject_id, title, description, chapter_order, created_by)
       VALUES (${subjectId}, ${title}, ${description || null}, ${chapter_order || 1}, ${req.user.id})

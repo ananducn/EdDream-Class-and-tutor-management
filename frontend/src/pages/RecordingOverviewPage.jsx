@@ -291,16 +291,26 @@ export default function RecordingOverviewPage() {
     [overview, selSubject],
   );
 
-  const summary = useMemo(() => {
-    const chs = scopedOverview.filter((r) => r.chapter_id);
-    return {
-      subjects: new Set(scopedOverview.map((r) => r.academic_year_subject_id)).size,
-      total: chs.length,
-      recorded: chs.filter((r) => r.recorded).length,
-      notRecorded: chs.filter((r) => !r.recorded).length,
-      pendingUpload: chs.filter((r) => r.recorded_not_uploaded).length,
-    };
+  // A common subject is placed in several stream-years, so the overview returns
+  // one row per (placement, chapter). Counting those rows would report a shared
+  // chapter — and its single recording — once per placement, making this screen
+  // disagree with /reports/recordings, which counts straight from the chapters
+  // table. Collapse to distinct chapters so the two agree.
+  const distinctChapters = useMemo(() => {
+    const byChapter = new Map();
+    for (const r of scopedOverview) {
+      if (r.chapter_id && !byChapter.has(r.chapter_id)) byChapter.set(r.chapter_id, r);
+    }
+    return [...byChapter.values()];
   }, [scopedOverview]);
+
+  const summary = useMemo(() => ({
+    subjects: new Set(scopedOverview.map((r) => r.subject_id)).size,
+    total: distinctChapters.length,
+    recorded: distinctChapters.filter((r) => r.recorded).length,
+    notRecorded: distinctChapters.filter((r) => !r.recorded).length,
+    pendingUpload: distinctChapters.filter((r) => r.recorded_not_uploaded).length,
+  }), [scopedOverview, distinctChapters]);
 
   const facultyName = (id) => faculty.find((f) => String(f.id) === String(id))?.name || null;
 
@@ -313,16 +323,20 @@ export default function RecordingOverviewPage() {
   // roll-up; every other key is a filtered chapter list.
   const statRows = useMemo(() => {
     if (!statModal) return [];
-    const chs = scopedOverview.filter((r) => r.chapter_id);
+    const chs = distinctChapters;
     if (statModal.key === 'subjects') {
+      // Roll up by subject, not by placement, so a common subject is one row
+      // whose chapter counts aren't doubled by its other stream-years.
       const bySubject = new Map();
+      const seen = new Set();
       for (const r of scopedOverview) {
-        const key = r.academic_year_subject_id;
+        const key = r.subject_id;
         if (!bySubject.has(key)) {
           bySubject.set(key, { ...r, total: 0, recorded: 0, pending: 0 });
         }
         const agg = bySubject.get(key);
-        if (r.chapter_id) {
+        if (r.chapter_id && !seen.has(r.chapter_id)) {
+          seen.add(r.chapter_id);
           agg.total += 1;
           if (r.recorded) agg.recorded += 1;
           if (r.recorded_not_uploaded) agg.pending += 1;
@@ -334,7 +348,7 @@ export default function RecordingOverviewPage() {
     if (statModal.key === 'notRecorded')   return chs.filter((r) => !r.recorded);
     if (statModal.key === 'pendingUpload') return chs.filter((r) => r.recorded_not_uploaded);
     return chs;
-  }, [statModal, scopedOverview]);
+  }, [statModal, scopedOverview, distinctChapters]);
 
   const TH = 'text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400';
 
