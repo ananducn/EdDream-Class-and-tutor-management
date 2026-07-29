@@ -47,22 +47,59 @@ router.get('/faculty', auth, async (req, res, next) => {
 });
 
 // Recording is tracked per chapter and a chapter belongs to a subject, not to a
-// placement — so count chapters directly. Going through nios_stream_subjects
-// would report a common subject's chapters once per stream.
+// placement, so the headline totals count chapters directly. Going through
+// nios_stream_subjects would report a common subject's chapters once per stream.
+//
+// The per-stream breakdown DOES go through placements, because there a shared
+// subject genuinely belongs to both streams — so those rows overlap by design and
+// will not sum to the totals. The page labels that.
 router.get('/recordings', auth, async (req, res, next) => {
   try {
-    const rows = await sql`
+    const uploaded = `(COALESCE(r.upload_youtube,false) OR COALESCE(r.upload_gdrive,false)
+                       OR COALESCE(r.upload_student_app,false) OR COALESCE(r.upload_harddisk,false))`;
+
+    const totals = await sql.query(`
       SELECT
-        COUNT(*) FILTER (WHERE r.is_recorded = true)::int AS total_recorded,
-        COUNT(*) FILTER (WHERE r.is_recorded IS NOT TRUE)::int AS total_not_recorded
+        COUNT(*)::int AS total_chapters,
+        COUNT(*) FILTER (WHERE r.is_recorded)::int AS recorded,
+        COUNT(*) FILTER (WHERE r.is_recorded IS NOT TRUE)::int AS not_recorded,
+        COUNT(*) FILTER (WHERE r.is_recorded AND NOT ${uploaded})::int AS pending_upload,
+        COUNT(*) FILTER (WHERE r.editing_status = 'edited')::int AS edited,
+        COUNT(*) FILTER (WHERE r.backup_available)::int AS backed_up,
+        COUNT(*) FILTER (WHERE r.is_recorded AND COALESCE(r.upload_youtube,false))::int AS on_youtube,
+        COUNT(*) FILTER (WHERE r.is_recorded AND COALESCE(r.upload_gdrive,false))::int AS on_gdrive,
+        COUNT(*) FILTER (WHERE r.is_recorded AND COALESCE(r.upload_student_app,false))::int AS on_student_app,
+        COUNT(*) FILTER (WHERE r.is_recorded AND COALESCE(r.upload_harddisk,false))::int AS on_harddisk
       FROM nios_chapters ch
       LEFT JOIN nios_chapter_recordings r ON r.nios_chapter_id = ch.id
-      WHERE ch.is_active = true
-    `;
-    res.json(rows[0]);
+      WHERE ch.is_active = true`);
+
+    const breakdown = await sql.query(`
+      SELECT
+        u.name AS university_name,
+        st.name AS stream_name,
+        sub.name AS subject_name,
+        COUNT(*)::int AS chapters,
+        COUNT(*) FILTER (WHERE r.is_recorded)::int AS recorded,
+        COUNT(*) FILTER (WHERE r.is_recorded IS NOT TRUE)::int AS not_recorded,
+        COUNT(*) FILTER (WHERE r.is_recorded AND NOT ${uploaded})::int AS pending_upload
+      FROM nios_stream_subjects ss
+      JOIN nios_streams st       ON st.id = ss.nios_stream_id
+      JOIN nios_universities u   ON u.id = st.nios_university_id
+      JOIN nios_subjects sub     ON sub.id = ss.nios_subject_id
+      JOIN nios_chapters ch      ON ch.nios_subject_id = ss.nios_subject_id AND ch.is_active = true
+      LEFT JOIN nios_chapter_recordings r ON r.nios_chapter_id = ch.id
+      GROUP BY u.name, st.name, sub.name
+      ORDER BY u.name, st.name, sub.name`);
+
+    res.json({ ...totals[0], breakdown });
   } catch (err) { next(err); }
 });
 
+// Every NIOS recording with the detail that was captured but never surfaced:
+// duration, editing state, backup, storage, and which destinations it reached.
+// Streams are aggregated into one column rather than joined as rows, so a common
+// subject's recording stays a single line.
 router.get('/uploads', auth, async (req, res, next) => {
   try {
     const rows = await sql`
@@ -71,7 +108,18 @@ router.get('/uploads', auth, async (req, res, next) => {
         COALESCE(f.name, 'Unassigned') AS faculty_name,
         COALESCE(sub.name, '—') AS subject_name,
         ch.title AS chapter_title,
-        r.upload_student_app, r.upload_youtube, r.upload_gdrive, r.upload_harddisk
+        ch.chapter_order,
+        r.recording_duration, r.editing_status, r.backup_available, r.storage_location,
+        r.upload_student_app, r.upload_student_app_link,
+        r.upload_youtube, r.upload_youtube_link, r.youtube_privacy,
+        r.upload_gdrive, r.upload_gdrive_link,
+        r.upload_harddisk, r.upload_harddisk_location,
+        COALESCE((
+          SELECT string_agg(DISTINCT st.name, ', ')
+          FROM nios_stream_subjects ss
+          JOIN nios_streams st ON st.id = ss.nios_stream_id
+          WHERE ss.nios_subject_id = ch.nios_subject_id
+        ), '—') AS streams
       FROM nios_chapter_recordings r
       JOIN nios_chapters ch ON ch.id = r.nios_chapter_id
       LEFT JOIN nios_subjects sub ON sub.id = ch.nios_subject_id
@@ -175,19 +223,45 @@ router.get('/export', auth, async (req, res, next) => {
         GROUP BY f.id, f.name ORDER BY total_hours DESC
       `;
     } else if (type === 'recordings') {
+      // Export the per-subject breakdown rather than two totals — a CSV of one
+      // row is not worth downloading.
       rows = await sql`
         SELECT
-          COUNT(*) FILTER (WHERE r.is_recorded = true)::int AS total_recorded,
-          COUNT(*) FILTER (WHERE r.is_recorded IS NOT TRUE)::int AS total_not_recorded
-        FROM nios_chapters ch
+          u.name AS university_name,
+          st.name AS stream_name,
+          sub.name AS subject_name,
+          COUNT(*)::int AS chapters,
+          COUNT(*) FILTER (WHERE r.is_recorded)::int AS recorded,
+          COUNT(*) FILTER (WHERE r.is_recorded IS NOT TRUE)::int AS not_recorded,
+          COUNT(*) FILTER (WHERE r.is_recorded AND NOT (
+            COALESCE(r.upload_youtube,false) OR COALESCE(r.upload_gdrive,false)
+            OR COALESCE(r.upload_student_app,false) OR COALESCE(r.upload_harddisk,false)
+          ))::int AS pending_upload
+        FROM nios_stream_subjects ss
+        JOIN nios_streams st     ON st.id = ss.nios_stream_id
+        JOIN nios_universities u ON u.id = st.nios_university_id
+        JOIN nios_subjects sub   ON sub.id = ss.nios_subject_id
+        JOIN nios_chapters ch    ON ch.nios_subject_id = ss.nios_subject_id AND ch.is_active = true
         LEFT JOIN nios_chapter_recordings r ON r.nios_chapter_id = ch.id
-        WHERE ch.is_active = true
+        GROUP BY u.name, st.name, sub.name
+        ORDER BY u.name, st.name, sub.name
       `;
     } else if (type === 'uploads') {
       rows = await sql`
-        SELECT ch.title AS chapter_title, COALESCE(sub.name,'—') AS subject_name,
-          COALESCE(f.name,'Unassigned') AS faculty_name, r.recording_date,
-          r.upload_student_app, r.upload_youtube, r.upload_gdrive, r.upload_harddisk
+        SELECT
+          COALESCE(sub.name,'—') AS subject_name,
+          COALESCE((
+            SELECT string_agg(DISTINCT st.name, ', ')
+            FROM nios_stream_subjects ss
+            JOIN nios_streams st ON st.id = ss.nios_stream_id
+            WHERE ss.nios_subject_id = ch.nios_subject_id
+          ), '—') AS streams,
+          ch.title AS chapter_title,
+          COALESCE(f.name,'Unassigned') AS faculty_name,
+          r.recording_date, r.recording_duration, r.editing_status,
+          r.backup_available, r.storage_location,
+          r.upload_student_app, r.upload_youtube, r.youtube_privacy,
+          r.upload_gdrive, r.upload_harddisk, r.upload_harddisk_location
         FROM nios_chapter_recordings r
         JOIN nios_chapters ch ON ch.id = r.nios_chapter_id
         LEFT JOIN nios_subjects sub ON sub.id = ch.nios_subject_id

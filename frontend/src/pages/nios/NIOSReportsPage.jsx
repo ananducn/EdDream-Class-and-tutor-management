@@ -112,6 +112,30 @@ function FacultyTab() {
   );
 }
 
+function StatCard({ label, value, sub, tone = 'slate' }) {
+  const tones = {
+    slate: 'text-slate-900 dark:text-slate-100',
+    green: 'text-green-600 dark:text-green-400',
+    red: 'text-red-600 dark:text-red-400',
+    amber: 'text-amber-600 dark:text-amber-400',
+    blue: 'text-blue-600 dark:text-blue-400',
+  };
+  return (
+    <Card>
+      <CardContent className="pt-4 pb-4 flex flex-col items-center gap-1">
+        <p className={`text-2xl font-bold ${tones[tone]}`}>{value ?? 0}</p>
+        <p className="text-xs text-slate-500 dark:text-slate-400 text-center">{label}</p>
+        {sub && <p className="text-[11px] text-slate-400 text-center">{sub}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
+function pct(part, whole) {
+  if (!whole) return '—';
+  return `${Math.round((part / whole) * 100)}%`;
+}
+
 // Recording progress is a snapshot of the whole NIOS syllabus, not a date-ranged
 // count of sessions, so this tab has no date pickers.
 function RecordingsTab() {
@@ -124,22 +148,66 @@ function RecordingsTab() {
         <Button variant="outline" onClick={() => exportCSV('recordings', null, null, { dated: false })} disabled={loading}>Export CSV</Button>
       </div>
       <p className="text-xs text-slate-400">
-        Snapshot of the whole NIOS syllabus. A subject shared by several streams is counted once.
+        Snapshot of the whole NIOS syllabus. Totals count each chapter once, however many streams share its subject.
       </p>
       {data && (
-        <div className="grid grid-cols-2 gap-3">
-          {[
-            { label: 'Recorded', value: data.total_recorded },
-            { label: 'Not Recorded', value: data.total_not_recorded },
-          ].map(({ label, value }) => (
-            <Card key={label}>
-              <CardContent className="pt-4 pb-4 flex flex-col items-center gap-1">
-                <p className="text-2xl font-bold text-slate-900 dark:text-slate-100">{value ?? 0}</p>
-                <p className="text-xs text-slate-500 dark:text-slate-400 text-center">{label}</p>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            <StatCard label="Total Chapters" value={data.total_chapters} tone="blue" />
+            <StatCard label="Recorded"       value={data.recorded} tone="green" sub={pct(data.recorded, data.total_chapters) + ' complete'} />
+            <StatCard label="Not Recorded"   value={data.not_recorded} tone="red" />
+            <StatCard label="Pending Upload" value={data.pending_upload} tone="amber" sub="recorded, nowhere yet" />
+            <StatCard label="Edited"         value={data.edited} />
+            <StatCard label="Backed Up"      value={data.backed_up} />
+          </div>
+
+          <div>
+            <p className="text-xs font-medium text-slate-500 dark:text-slate-400 mb-2">Where recordings live</p>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <StatCard label="Student App" value={data.on_student_app} />
+              <StatCard label="YouTube"     value={data.on_youtube} />
+              <StatCard label="Google Drive" value={data.on_gdrive} />
+              <StatCard label="Hard Disk"   value={data.on_harddisk} />
+            </div>
+          </div>
+
+          {data.breakdown?.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-xs font-medium text-slate-500 dark:text-slate-400">By stream and subject</p>
+              <p className="text-[11px] text-slate-400">
+                A subject shared by two streams is listed under both, so these rows overlap and will not add up to the totals above.
+              </p>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className={TH}>University</TableHead>
+                    <TableHead className={TH}>Stream</TableHead>
+                    <TableHead className={TH}>Subject</TableHead>
+                    <TableHead className={`${TH} text-right`}>Chapters</TableHead>
+                    <TableHead className={`${TH} text-right`}>Recorded</TableHead>
+                    <TableHead className={`${TH} text-right`}>Not Recorded</TableHead>
+                    <TableHead className={`${TH} text-right`}>Pending Upload</TableHead>
+                    <TableHead className={`${TH} text-right`}>Progress</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data.breakdown.map((row, i) => (
+                    <TableRow key={i}>
+                      <TableCell className="text-slate-500 dark:text-slate-400">{row.university_name}</TableCell>
+                      <TableCell className="text-slate-500 dark:text-slate-400">{row.stream_name}</TableCell>
+                      <TableCell className="font-medium text-slate-900 dark:text-slate-100">{row.subject_name}</TableCell>
+                      <TableCell className="text-right">{row.chapters}</TableCell>
+                      <TableCell className="text-right text-green-600 dark:text-green-400">{row.recorded}</TableCell>
+                      <TableCell className="text-right text-red-600 dark:text-red-400">{row.not_recorded}</TableCell>
+                      <TableCell className="text-right text-amber-600 dark:text-amber-400">{row.pending_upload}</TableCell>
+                      <TableCell className="text-right">{pct(row.recorded, row.chapters)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -149,6 +217,10 @@ function UploadsTab() {
   const { data, loading, run } = useReport('/nios/reports/uploads', { dated: false });
   const tick = (val) => (val ? '✓' : '—');
 
+  const destinations = (r) =>
+    [r.upload_student_app && 'App', r.upload_youtube && 'YT', r.upload_gdrive && 'GD', r.upload_harddisk && 'HDD']
+      .filter(Boolean).length;
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3">
@@ -156,35 +228,68 @@ function UploadsTab() {
         <Button variant="outline" onClick={() => exportCSV('uploads', null, null, { dated: false })} disabled={loading}>Export CSV</Button>
       </div>
       {data && (
-        !data.length ? <EmptyState>No NIOS recordings uploaded yet.</EmptyState> : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className={TH}>Date</TableHead>
-                <TableHead className={TH}>Faculty</TableHead>
-                <TableHead className={TH}>Subject</TableHead>
-                <TableHead className={TH}>Chapter</TableHead>
-                <TableHead className={`${TH} text-center`}>Student App</TableHead>
-                <TableHead className={`${TH} text-center`}>YouTube</TableHead>
-                <TableHead className={`${TH} text-center`}>GDrive</TableHead>
-                <TableHead className={`${TH} text-center`}>Hard Disk</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {data.map((row) => (
-                <TableRow key={row.id}>
-                  <TableCell>{row.date || '—'}</TableCell>
-                  <TableCell>{row.faculty_name}</TableCell>
-                  <TableCell>{row.subject_name}</TableCell>
-                  <TableCell>{row.chapter_title}</TableCell>
-                  <TableCell className="text-center">{tick(row.upload_student_app)}</TableCell>
-                  <TableCell className="text-center">{tick(row.upload_youtube)}</TableCell>
-                  <TableCell className="text-center">{tick(row.upload_gdrive)}</TableCell>
-                  <TableCell className="text-center">{tick(row.upload_harddisk)}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+        !data.length ? <EmptyState>No NIOS recordings yet.</EmptyState> : (
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <StatCard label="Recordings" value={data.length} tone="blue" />
+              <StatCard label="Edited" value={data.filter((r) => r.editing_status === 'edited').length} tone="green" />
+              <StatCard label="Backed Up" value={data.filter((r) => r.backup_available).length} />
+              <StatCard label="On No Destination" value={data.filter((r) => destinations(r) === 0).length} tone="amber" />
+            </div>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className={TH}>Date</TableHead>
+                    <TableHead className={TH}>Stream</TableHead>
+                    <TableHead className={TH}>Subject</TableHead>
+                    <TableHead className={TH}>Chapter</TableHead>
+                    <TableHead className={TH}>Faculty</TableHead>
+                    <TableHead className={TH}>Duration</TableHead>
+                    <TableHead className={TH}>Editing</TableHead>
+                    <TableHead className={`${TH} text-center`}>Backup</TableHead>
+                    <TableHead className={TH}>Storage</TableHead>
+                    <TableHead className={`${TH} text-center`}>App</TableHead>
+                    <TableHead className={`${TH} text-center`}>YouTube</TableHead>
+                    <TableHead className={`${TH} text-center`}>GDrive</TableHead>
+                    <TableHead className={`${TH} text-center`}>Hard Disk</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data.map((row) => (
+                    <TableRow key={row.id} className={destinations(row) === 0 ? 'bg-amber-50/60 dark:bg-amber-950/20' : ''}>
+                      <TableCell className="whitespace-nowrap">{row.date || '—'}</TableCell>
+                      <TableCell className="text-slate-500 dark:text-slate-400">{row.streams}</TableCell>
+                      <TableCell>{row.subject_name}</TableCell>
+                      <TableCell className="font-medium text-slate-900 dark:text-slate-100">
+                        {row.chapter_order ? `${row.chapter_order}. ` : ''}{row.chapter_title}
+                      </TableCell>
+                      <TableCell>{row.faculty_name}</TableCell>
+                      <TableCell className="whitespace-nowrap">{row.recording_duration || '—'}</TableCell>
+                      <TableCell>
+                        {row.editing_status === 'edited'
+                          ? <span className="text-green-600 dark:text-green-400">Edited</span>
+                          : <span className="text-slate-400">Not edited</span>}
+                      </TableCell>
+                      <TableCell className="text-center">{tick(row.backup_available)}</TableCell>
+                      <TableCell className="text-slate-500 dark:text-slate-400 max-w-[14rem] truncate" title={row.storage_location || ''}>
+                        {row.storage_location || '—'}
+                      </TableCell>
+                      <TableCell className="text-center">{tick(row.upload_student_app)}</TableCell>
+                      <TableCell className="text-center">
+                        {row.upload_youtube ? (row.youtube_privacy || '✓') : '—'}
+                      </TableCell>
+                      <TableCell className="text-center">{tick(row.upload_gdrive)}</TableCell>
+                      <TableCell className="text-center">{tick(row.upload_harddisk)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            <p className="text-xs text-slate-400">
+              Highlighted rows are recorded but not on any destination yet.
+            </p>
+          </>
         )
       )}
     </div>
