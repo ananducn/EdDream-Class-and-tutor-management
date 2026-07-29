@@ -509,7 +509,7 @@ export default function NIOSClassesPage() {
       {/* Table */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle className="text-base text-slate-900 dark:text-slate-100">Classes ({classes.length})</CardTitle>
+          <CardTitle className="text-base text-slate-900 dark:text-slate-100">Classes ({displayClasses.length})</CardTitle>
           <Button size="sm" onClick={openAdd}>Add Class</Button>
         </CardHeader>
         <CardContent>
@@ -529,7 +529,7 @@ export default function NIOSClassesPage() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {classes.length === 0 && (
+              {displayClasses.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={10} className="text-center text-sm text-slate-500 dark:text-slate-400 py-8">No classes found.</TableCell>
                 </TableRow>

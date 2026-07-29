@@ -111,6 +111,23 @@ async function groupSlotIds(slotId, timetableId) {
   return group.map((r) => r.id);
 }
 
+// The classes a common slot creates are one logical class taught to several
+// batches, exactly like a common class made from the Classes page — so they need
+// the same class_group_id. Without it every count treats them as N separate
+// classes and the Classes list shows N rows instead of one. Call after the
+// group's membership settles. Only ever touches slot-created classes, since a
+// Classes-page class has no timetable_slot_id.
+async function syncClassGroupForSlots(slotIds) {
+  if (!slotIds || slotIds.length === 0) return;
+  const classes = await sql`
+    SELECT id FROM class_entries WHERE timetable_slot_id = ANY(${slotIds}) ORDER BY id
+  `;
+  if (classes.length === 0) return;
+  // A group of one is not shared with anything, so it carries no group id.
+  const groupId = classes.length > 1 ? classes[0].id : null;
+  await sql`UPDATE class_entries SET class_group_id = ${groupId} WHERE id = ANY(${classes.map((c) => c.id)})`;
+}
+
 // Removing a slot removes the class it created. class_entries.timetable_slot_id is
 // ON DELETE SET NULL, so without this the class row would survive the slot as an
 // orphan and keep showing up in Class Overview. Call BEFORE deleting the slots.
@@ -195,6 +212,7 @@ async function reconcileSlotGroup({ primary, desiredBatchIds, existing, userId }
   const groupId = members.length > 1 ? (primary.slot_group_id || primary.id) : null;
   await sql`UPDATE timetable_slots SET slot_group_id = ${groupId} WHERE id = ANY(${members.map((m) => m.id)})`;
   members.forEach((m) => { m.slot_group_id = groupId; });
+  await syncClassGroupForSlots(members.map((m) => m.id));
   return members;
 }
 
@@ -404,6 +422,7 @@ router.post('/:id/slots', auth, async (req, res, next) => {
       await sql`UPDATE timetable_slots SET slot_group_id = ${groupId} WHERE id = ANY(${ids})`;
       created.forEach((c) => { c.slot.slot_group_id = groupId; });
     }
+    await syncClassGroupForSlots(created.map((c) => c.slot.id));
 
     for (const c of created) {
       const ctx = await slotContext(c.slot, c.timetable.id);
@@ -485,6 +504,8 @@ router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
       const tt = await sql`SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date FROM timetables WHERE id = ${row.timetable_id}`;
       await syncClassForSlot(row, tt[0], req.user.id, { allowCreate: !!class_taken_status });
     }
+    // Classes may have just been created by that sync, so group them now.
+    await syncClassGroupForSlots(members.map((m) => m.id));
     const updCtx = await slotContext(primary, primary.timetable_id);
     await logActivity(req.user.id, req.user.name, req.user.role, 'update_slot', 'timetable_slot', primary.id,
       `Updated slot${members.length > 1 ? ` (common class, ${members.length} batches)` : ''} (status: ${primary.class_taken_status}): ${slotDetail(primary, updCtx)}`);

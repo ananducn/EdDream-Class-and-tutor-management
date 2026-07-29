@@ -122,6 +122,23 @@ async function syncNiosClassForSlot(slot, timetable, userId, { allowCreate = tru
   `;
 }
 
+// The classes a common slot creates are one logical class taught to several
+// batches, exactly like a common class made from the NIOS Classes page — so they
+// need the same nios_class_group_id. Without it every count treats them as N
+// separate classes and the Classes list shows N rows instead of one. Call after
+// the group's membership settles. Only ever touches slot-created classes, since a
+// Classes-page class has no nios_timetable_slot_id.
+async function syncNiosClassGroupForSlots(slotIds) {
+  if (!slotIds || slotIds.length === 0) return;
+  const classes = await sql`
+    SELECT id FROM nios_class_entries WHERE nios_timetable_slot_id = ANY(${slotIds}) ORDER BY id
+  `;
+  if (classes.length === 0) return;
+  // A group of one is not shared with anything, so it carries no group id.
+  const groupId = classes.length > 1 ? classes[0].id : null;
+  await sql`UPDATE nios_class_entries SET nios_class_group_id = ${groupId} WHERE id = ANY(${classes.map((c) => c.id)})`;
+}
+
 // Removing a slot removes the class it created — nios_class_entries.
 // nios_timetable_slot_id is ON DELETE SET NULL, so without this the class row
 // would outlive its slot as an orphan. Call BEFORE deleting the slots.
@@ -300,6 +317,7 @@ async function reconcileNiosSlotGroup({ primary, desiredBatchIds, existing, user
   const groupId = members.length > 1 ? (primary.nios_slot_group_id || primary.id) : null;
   await sql`UPDATE nios_timetable_slots SET nios_slot_group_id = ${groupId} WHERE id = ANY(${members.map((m) => m.id)})`;
   members.forEach((m) => { m.nios_slot_group_id = groupId; });
+  await syncNiosClassGroupForSlots(members.map((m) => m.id));
   return members;
 }
 
@@ -508,6 +526,7 @@ router.post('/:id/slots', auth, async (req, res, next) => {
       await sql`UPDATE nios_timetable_slots SET nios_slot_group_id = ${groupId} WHERE id = ANY(${ids})`;
       created.forEach((c) => { c.slot.nios_slot_group_id = groupId; });
     }
+    await syncNiosClassGroupForSlots(created.map((c) => c.slot.id));
 
     for (const c of created) {
       const ctx = await niosSlotContext(c.slot, c.timetable.id);
@@ -596,6 +615,8 @@ router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
       const tt = await sql`SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date FROM nios_timetables WHERE id = ${row.nios_timetable_id}`;
       await syncNiosClassForSlot(row, tt[0], req.user.id, { allowCreate: !!class_taken_status });
     }
+    // Classes may have just been created by that sync, so group them now.
+    await syncNiosClassGroupForSlots(members.map((m) => m.id));
     const updCtx = await niosSlotContext(primary, primary.nios_timetable_id);
     await logActivity(req.user.id, req.user.name, req.user.role, 'update_nios_slot', 'nios_timetable_slot', primary.id,
       `Updated NIOS slot${members.length > 1 ? ` (common class, ${members.length} batches)` : ''} (status: ${primary.class_taken_status}): ${niosSlotDetail(primary, updCtx)}`);
