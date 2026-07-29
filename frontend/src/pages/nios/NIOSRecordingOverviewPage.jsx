@@ -71,11 +71,13 @@ function destinationSummary(ch) {
 
 export default function NIOSRecordingOverviewPage() {
   const [universities, setUniversities] = useState([]);
-  const [subjects, setSubjects] = useState([]); // nios_university_subjects rows
+  const [streams, setStreams] = useState([]);
+  const [subjects, setSubjects] = useState([]); // nios_stream_subjects rows
   const [faculty, setFaculty] = useState([]);
 
   const [selUni, setSelUni] = useState('');
-  const [selSubject, setSelSubject] = useState(''); // nios_university_subject id
+  const [selStream, setSelStream] = useState('');
+  const [selSubject, setSelSubject] = useState(''); // nios_stream_subject id
 
   const [chapters, setChapters] = useState([]);
   const [overview, setOverview] = useState([]);
@@ -105,18 +107,29 @@ export default function NIOSRecordingOverviewPage() {
   }, []);
 
   async function handleUni(v) {
-    setSelUni(v); setSelSubject(''); setSubjects([]); setChapters([]); setOverview([]);
+    setSelUni(v); setSelStream(''); setSelSubject('');
+    setStreams([]); setSubjects([]); setChapters([]); setOverview([]);
     if (!v) return;
     setLoading(true);
     try {
-      const [subs, ov] = await Promise.all([
-        client.get('/nios/university-subjects', { params: { nios_university_id: v } }),
+      const [st, subs, ov] = await Promise.all([
+        client.get('/nios/streams', { params: { nios_university_id: v } }),
+        client.get('/nios/stream-subjects', { params: { nios_university_id: v } }),
         client.get('/nios/chapter-recordings/overview', { params: { nios_university_id: v } }),
       ]);
+      setStreams(st.data);
       setSubjects(subs.data);
       setOverview(ov.data);
     } catch { toast.error('Failed to load university syllabus.'); }
     finally { setLoading(false); }
+  }
+
+  // Narrowing to a stream also narrows the subject list to that stream's syllabus.
+  function handleStream(v) {
+    if (v === '__none') v = '';
+    setSelStream(v);
+    setSelSubject('');
+    setChapters([]);
   }
 
   async function handleSubject(v) {
@@ -125,7 +138,7 @@ export default function NIOSRecordingOverviewPage() {
     if (!v) { setLoading(false); return; }
     setLoading(true);
     try {
-      const res = await client.get('/nios/chapter-recordings', { params: { nios_university_subject_id: v } });
+      const res = await client.get('/nios/chapter-recordings', { params: { nios_stream_subject_id: v } });
       setChapters(res.data);
     } catch { toast.error('Failed to load chapters.'); }
     finally { setLoading(false); }
@@ -210,23 +223,45 @@ export default function NIOSRecordingOverviewPage() {
     }
   }
 
-  // Stats follow the filters: a selected subject narrows them to that subject,
-  // otherwise they cover the whole university.
-  const scopedOverview = useMemo(
-    () => (selSubject ? overview.filter((r) => String(r.nios_university_subject_id) === String(selSubject)) : overview),
-    [overview, selSubject],
+  // The same subject can sit in several streams, so the picker only offers the
+  // placements belonging to the selected stream.
+  const visibleSubjects = useMemo(
+    () => (selStream ? subjects.filter((s) => String(s.nios_stream_id) === String(selStream)) : subjects),
+    [subjects, selStream],
   );
 
-  const summary = useMemo(() => {
-    const chs = scopedOverview.filter((r) => r.chapter_id);
-    return {
-      subjects: new Set(scopedOverview.map((r) => r.nios_university_subject_id)).size,
-      total: chs.length,
-      recorded: chs.filter((r) => r.recorded).length,
-      notRecorded: chs.filter((r) => !r.recorded).length,
-      pendingUpload: chs.filter((r) => r.recorded_not_uploaded).length,
-    };
+  // Stats follow the filters: a selected stream or subject narrows them,
+  // otherwise they cover the whole university.
+  const scopedOverview = useMemo(
+    () => {
+      let rows = overview;
+      if (selStream) rows = rows.filter((r) => String(r.nios_stream_id) === String(selStream));
+      if (selSubject) rows = rows.filter((r) => String(r.nios_stream_subject_id) === String(selSubject));
+      return rows;
+    },
+    [overview, selStream, selSubject],
+  );
+
+  // A common subject is placed in several streams, so the overview returns one
+  // row per (stream, chapter). Counting those rows would report a shared
+  // chapter — and its single recording — once per stream. Collapse to distinct
+  // chapters so these totals agree with the main app's /reports/recordings,
+  // which counts straight from the chapters table.
+  const distinctChapters = useMemo(() => {
+    const byChapter = new Map();
+    for (const r of scopedOverview) {
+      if (r.chapter_id && !byChapter.has(r.chapter_id)) byChapter.set(r.chapter_id, r);
+    }
+    return [...byChapter.values()];
   }, [scopedOverview]);
+
+  const summary = useMemo(() => ({
+    subjects: new Set(scopedOverview.map((r) => r.nios_subject_id)).size,
+    total: distinctChapters.length,
+    recorded: distinctChapters.filter((r) => r.recorded).length,
+    notRecorded: distinctChapters.filter((r) => !r.recorded).length,
+    pendingUpload: distinctChapters.filter((r) => r.recorded_not_uploaded).length,
+  }), [scopedOverview, distinctChapters]);
 
   const facultyName = (id) => faculty.find((f) => String(f.id) === String(id))?.name || null;
 
@@ -239,14 +274,18 @@ export default function NIOSRecordingOverviewPage() {
   // roll-up; every other key is a filtered chapter list.
   const statRows = useMemo(() => {
     if (!statModal) return [];
-    const chs = scopedOverview.filter((r) => r.chapter_id);
+    const chs = distinctChapters;
     if (statModal.key === 'subjects') {
+      // Roll up by subject, not by placement, so a common subject is one row
+      // whose chapter counts aren't doubled by its second stream.
       const bySubject = new Map();
+      const seen = new Set();
       for (const r of scopedOverview) {
-        const key = r.nios_university_subject_id;
+        const key = r.nios_subject_id;
         if (!bySubject.has(key)) bySubject.set(key, { ...r, total: 0, recorded: 0, pending: 0 });
         const agg = bySubject.get(key);
-        if (r.chapter_id) {
+        if (r.chapter_id && !seen.has(r.chapter_id)) {
+          seen.add(r.chapter_id);
           agg.total += 1;
           if (r.recorded) agg.recorded += 1;
           if (r.recorded_not_uploaded) agg.pending += 1;
@@ -258,7 +297,7 @@ export default function NIOSRecordingOverviewPage() {
     if (statModal.key === 'notRecorded')   return chs.filter((r) => !r.recorded);
     if (statModal.key === 'pendingUpload') return chs.filter((r) => r.recorded_not_uploaded);
     return chs;
-  }, [statModal, scopedOverview]);
+  }, [statModal, scopedOverview, distinctChapters]);
 
   const TH = 'text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400';
 
@@ -277,12 +316,26 @@ export default function NIOSRecordingOverviewPage() {
               </Select>
             </div>
             <div className="space-y-1">
+              <Label>Stream</Label>
+              <Select value={selStream} onValueChange={handleStream} disabled={streams.length === 0}>
+                <SelectTrigger className="w-full"><SelectValue placeholder="All streams" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__none">All streams</SelectItem>
+                  {streams.map((st) => <SelectItem key={st.id} value={String(st.id)}>{st.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
               <Label>Subject</Label>
-              <Select value={selSubject} onValueChange={handleSubject} disabled={subjects.length === 0}>
+              <Select value={selSubject} onValueChange={handleSubject} disabled={visibleSubjects.length === 0}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="All subjects" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="__none">All subjects</SelectItem>
-                  {subjects.map((s) => <SelectItem key={s.id} value={String(s.id)}>{s.subject_name}</SelectItem>)}
+                  {visibleSubjects.map((s) => (
+                    <SelectItem key={s.id} value={String(s.id)}>
+                      {selStream ? s.subject_name : `${s.stream_name} · ${s.subject_name}`}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -352,18 +405,21 @@ export default function NIOSRecordingOverviewPage() {
           )
           ) : loading ? (
             <SkeletonTable rows={6} cols={4} />
-          ) : overview.filter((r) => r.chapter_id).length === 0 ? (
+          ) : scopedOverview.filter((r) => r.chapter_id).length === 0 ? (
             <p className="text-sm text-slate-400 dark:text-slate-500 py-8 text-center">
               {overview.length === 0
                 ? 'Pick a NIOS university to see its recording report.'
-                : 'No chapters at this level yet.'}
+                : selStream
+                  ? 'No chapters in this stream yet.'
+                  : 'No chapters at this level yet.'}
             </p>
           ) : (
-            /* No subject picked: the whole university's syllabus as a report. */
+            /* No subject picked: the syllabus for whatever is in scope, as a report. */
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
+                    {!selStream && <TableHead className={TH}>Stream</TableHead>}
                     <TableHead className={TH}>Subject</TableHead>
                     <TableHead className={TH}>Chapter</TableHead>
                     <TableHead className={TH}>Recorded</TableHead>
@@ -372,8 +428,11 @@ export default function NIOSRecordingOverviewPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {overview.filter((r) => r.chapter_id).map((r) => (
-                    <TableRow key={r.chapter_id} onClick={() => openDetails(r)} className="cursor-pointer">
+                  {scopedOverview.filter((r) => r.chapter_id).map((r) => (
+                    // A common subject sits in several streams, so the same
+                    // chapter_id can appear more than once — key on the placement too.
+                    <TableRow key={`${r.nios_stream_subject_id}-${r.chapter_id}`} onClick={() => openDetails(r)} className="cursor-pointer">
+                      {!selStream && <TableCell className="text-sm text-slate-500 dark:text-slate-400">{r.stream_name}</TableCell>}
                       <TableCell className="text-sm text-slate-600 dark:text-slate-300">{r.subject_name}</TableCell>
                       <TableCell className="font-medium text-slate-900 dark:text-slate-100">{r.chapter_title}</TableCell>
                       <TableCell>
@@ -500,7 +559,7 @@ export default function NIOSRecordingOverviewPage() {
               </TableHeader>
               <TableBody>
                 {statRows.map((s) => (
-                  <TableRow key={s.nios_university_subject_id}>
+                  <TableRow key={s.nios_stream_subject_id}>
                     <TableCell className="font-medium text-slate-900 dark:text-slate-100">{s.subject_name}</TableCell>
                     <TableCell className="tabular-nums text-slate-700 dark:text-slate-300">{s.total}</TableCell>
                     <TableCell className="tabular-nums text-green-600 dark:text-green-400">{s.recorded}</TableCell>

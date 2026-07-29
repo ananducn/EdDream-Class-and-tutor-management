@@ -25,7 +25,8 @@ import chapterRecordingsRouter from './routes/chapter-recordings.js';
 import niosUniversitiesRouter from './routes/nios-universities.js';
 import niosBatchesRouter from './routes/nios-batches.js';
 import niosSubjectsRouter from './routes/nios-subjects.js';
-import niosUniversitySubjectsRouter from './routes/nios-university-subjects.js';
+import niosStreamsRouter from './routes/nios-streams.js';
+import niosStreamSubjectsRouter from './routes/nios-stream-subjects.js';
 import niosChaptersRouter from './routes/nios-chapters.js';
 import niosChapterRecordingsRouter from './routes/nios-chapter-recordings.js';
 import niosResourcesRouter from './routes/nios-resources.js';
@@ -269,17 +270,33 @@ const migrations = [
     updated_at TIMESTAMPTZ DEFAULT NOW()
   )`,
 
-  // NIOS: syllabus now hangs off the university (the batch-independent container).
-  () => sql`CREATE TABLE IF NOT EXISTS nios_university_subjects (
+  // NIOS: the syllabus hangs off a STREAM (Science, Commerce, …) inside the
+  // university. Before this, subjects sat on the university itself, so every
+  // batch of "NIOS +2" inherited one flat subject list and a Science batch could
+  // not differ from a Commerce one. Shape now mirrors the main app:
+  // University → Stream → Batch, with the syllabus rooted on the stream.
+  () => sql`CREATE TABLE IF NOT EXISTS nios_streams (
     id SERIAL PRIMARY KEY,
     nios_university_id INTEGER NOT NULL REFERENCES nios_universities(id) ON DELETE CASCADE,
-    nios_subject_id    INTEGER NOT NULL REFERENCES nios_subjects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    is_active BOOLEAN DEFAULT true,
+    created_by INTEGER REFERENCES users(id),
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    UNIQUE(nios_university_id, nios_subject_id)
+    UNIQUE(nios_university_id, name)
   )`,
-  () => sql`ALTER TABLE nios_chapters ADD COLUMN IF NOT EXISTS nios_university_subject_id INTEGER REFERENCES nios_university_subjects(id) ON DELETE CASCADE`,
+  () => sql`CREATE TABLE IF NOT EXISTS nios_stream_subjects (
+    id SERIAL PRIMARY KEY,
+    nios_stream_id  INTEGER NOT NULL REFERENCES nios_streams(id) ON DELETE CASCADE,
+    nios_subject_id INTEGER NOT NULL REFERENCES nios_subjects(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(nios_stream_id, nios_subject_id)
+  )`,
+  // A batch belongs to exactly one stream, so choosing a batch already fixes
+  // which subjects are legal for it — nothing has to be picked twice.
+  () => sql`ALTER TABLE nios_batches ADD COLUMN IF NOT EXISTS nios_stream_id INTEGER REFERENCES nios_streams(id)`,
   () => sql`ALTER TABLE nios_chapters DROP COLUMN IF EXISTS nios_batch_subject_id`,
   () => sql`DROP TABLE IF EXISTS nios_batch_subjects CASCADE`,
+  () => sql`DROP TABLE IF EXISTS nios_university_subjects CASCADE`,
 
   // NIOS: strip recording/upload columns from class sessions.
   () => sql`ALTER TABLE nios_class_entries
@@ -366,15 +383,6 @@ const migrations = [
   // NIOS side: mirror the re-root. nios_subjects are already global (no
   // university binding), so only the chapter root moves.
   () => sql`ALTER TABLE nios_chapters ADD COLUMN IF NOT EXISTS nios_subject_id INTEGER REFERENCES nios_subjects(id) ON DELETE CASCADE`,
-  () => sql`DO $$
-    BEGIN
-      IF EXISTS (SELECT 1 FROM information_schema.columns
-                 WHERE table_name = 'nios_chapters' AND column_name = 'nios_university_subject_id') THEN
-        UPDATE nios_chapters ch SET nios_subject_id = nus.nios_subject_id
-        FROM nios_university_subjects nus
-        WHERE nus.id = ch.nios_university_subject_id AND ch.nios_subject_id IS NULL;
-      END IF;
-    END $$`,
   () => sql`ALTER TABLE nios_chapters DROP COLUMN IF EXISTS nios_university_subject_id`,
   () => sql`ALTER TABLE nios_class_entries ADD COLUMN IF NOT EXISTS nios_class_group_id INTEGER`,
 
@@ -408,7 +416,10 @@ const migrations = [
   () => sql`CREATE INDEX IF NOT EXISTS idx_nios_class_entries_subject ON nios_class_entries (nios_subject_id)`,
   () => sql`CREATE INDEX IF NOT EXISTS idx_nios_class_entries_group ON nios_class_entries (nios_class_group_id)`,
   () => sql`CREATE INDEX IF NOT EXISTS idx_nios_chapters_subject ON nios_chapters (nios_subject_id)`,
-  () => sql`CREATE INDEX IF NOT EXISTS idx_nios_us_subject ON nios_university_subjects (nios_subject_id)`,
+  () => sql`CREATE INDEX IF NOT EXISTS idx_nios_ss_subject ON nios_stream_subjects (nios_subject_id)`,
+  () => sql`CREATE INDEX IF NOT EXISTS idx_nios_ss_stream ON nios_stream_subjects (nios_stream_id)`,
+  () => sql`CREATE INDEX IF NOT EXISTS idx_nios_streams_university ON nios_streams (nios_university_id)`,
+  () => sql`CREATE INDEX IF NOT EXISTS idx_nios_batches_stream ON nios_batches (nios_stream_id)`,
   () => sql`CREATE INDEX IF NOT EXISTS idx_nios_timetables_batch ON nios_timetables (nios_university_id, nios_batch_id, week_start_date)`,
   () => sql`CREATE INDEX IF NOT EXISTS idx_nios_tt_slots_timetable ON nios_timetable_slots (nios_timetable_id)`,
   () => sql`CREATE INDEX IF NOT EXISTS idx_nios_class_chapters_chapter ON nios_class_chapters (nios_chapter_id)`,
@@ -481,7 +492,8 @@ app.use('/api/chapter-recordings', chapterRecordingsRouter);
 app.use('/api/nios/universities', niosUniversitiesRouter);
 app.use('/api/nios/batches', niosBatchesRouter);
 app.use('/api/nios/subjects', niosSubjectsRouter);
-app.use('/api/nios/university-subjects', niosUniversitySubjectsRouter);
+app.use('/api/nios/streams', niosStreamsRouter);
+app.use('/api/nios/stream-subjects', niosStreamSubjectsRouter);
 app.use('/api/nios/chapters', niosChaptersRouter);
 app.use('/api/nios/chapter-recordings', niosChapterRecordingsRouter);
 app.use('/api/nios/resources', niosResourcesRouter);

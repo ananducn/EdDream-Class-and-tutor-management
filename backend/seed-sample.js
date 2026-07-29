@@ -42,7 +42,7 @@ await sql`TRUNCATE
   subjects, batches, streams, faculty, universities,
   nios_chapter_recordings, nios_resources, nios_class_chapters, nios_timetable_slot_chapters,
   nios_class_entries, nios_timetable_slots, nios_timetables, nios_chapters,
-  nios_university_subjects, nios_batches, nios_subjects
+  nios_stream_subjects, nios_batches, nios_streams, nios_subjects
   RESTART IDENTITY CASCADE`;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -465,10 +465,15 @@ const niosSSLC    = niosUnis.find((u) => u.name === 'NIOS SSLC');
 async function addNiosSubject(name, code) {
   return one(await sql`INSERT INTO nios_subjects (name, subject_code, created_by) VALUES (${name}, ${code}, ${ADMIN}) RETURNING *`);
 }
-async function assignNiosSubject(uniId, subjectId) {
+async function addNiosStream(uniId, name) {
   return one(await sql`
-    INSERT INTO nios_university_subjects (nios_university_id, nios_subject_id)
-    VALUES (${uniId}, ${subjectId}) ON CONFLICT DO NOTHING RETURNING *`);
+    INSERT INTO nios_streams (nios_university_id, name, created_by)
+    VALUES (${uniId}, ${name}, ${ADMIN}) ON CONFLICT DO NOTHING RETURNING *`);
+}
+async function assignNiosSubject(streamId, subjectId) {
+  return one(await sql`
+    INSERT INTO nios_stream_subjects (nios_stream_id, nios_subject_id)
+    VALUES (${streamId}, ${subjectId}) ON CONFLICT DO NOTHING RETURNING *`);
 }
 async function addNiosChapter(subjectId, title, order) {
   return one(await sql`
@@ -499,37 +504,46 @@ async function recordNiosChapter(chapterId, state, { fac: f, slug, date, dur }) 
       ${!!hdd}, ${hdd}, ${ADMIN}
     )`;
 }
-async function addNiosBatch(uniId, name, year) {
+async function addNiosBatch(stream, name, year) {
   return one(await sql`
-    INSERT INTO nios_batches (nios_university_id, name, year, created_by)
-    VALUES (${uniId}, ${name}, ${year}, ${ADMIN}) RETURNING *`);
+    INSERT INTO nios_batches (nios_university_id, nios_stream_id, name, year, created_by)
+    VALUES (${stream.nios_university_id}, ${stream.id}, ${name}, ${year}, ${ADMIN}) RETURNING *`);
 }
 
+// `streams` lists which of the university's streams carry each subject. A
+// subject named in two streams (Mathematics (+2), English) is a common subject:
+// one chapter list and one set of recordings, shared by both.
 const NIOS = [
-  { uni: niosPlusTwo, subjects: [
-    { name: 'Physics', code: '312', fac: 'Kumar', chapters: chapters('Motion in a Straight Line', 'Laws of Motion', 'Work, Energy & Power', 'Gravitation', 'Thermodynamics') },
-    { name: 'Chemistry', code: '313', fac: 'Kumar', chapters: chapters('Atomic Structure', 'Chemical Bonding', 'States of Matter', 'Chemical Kinetics') },
-    { name: 'Biology', code: '314', fac: 'Suresh', chapters: chapters('The Living World', 'Cell Structure', 'Plant Physiology', 'Human Physiology') },
-    { name: 'Mathematics (+2)', code: '311', fac: 'Prakash', chapters: chapters('Sets & Functions', 'Trigonometric Functions', 'Calculus', 'Vectors', 'Probability') },
-    { name: 'Accountancy', code: '320', fac: 'Menon', chapters: chapters('Basics of Accounting', 'Journal & Ledger', 'Financial Statements', 'Partnership Accounts') },
-    { name: 'Business Studies', code: '319', fac: 'Nair', chapters: chapters('Nature of Business', 'Forms of Organisation', 'Management Principles', 'Marketing') },
+  { uni: niosPlusTwo, streams: ['Science', 'Commerce'], subjects: [
+    { name: 'Physics', code: '312', fac: 'Kumar', streams: ['Science'], chapters: chapters('Motion in a Straight Line', 'Laws of Motion', 'Work, Energy & Power', 'Gravitation', 'Thermodynamics') },
+    { name: 'Chemistry', code: '313', fac: 'Kumar', streams: ['Science'], chapters: chapters('Atomic Structure', 'Chemical Bonding', 'States of Matter', 'Chemical Kinetics') },
+    { name: 'Biology', code: '314', fac: 'Suresh', streams: ['Science'], chapters: chapters('The Living World', 'Cell Structure', 'Plant Physiology', 'Human Physiology') },
+    { name: 'Mathematics (+2)', code: '311', fac: 'Prakash', streams: ['Science', 'Commerce'], chapters: chapters('Sets & Functions', 'Trigonometric Functions', 'Calculus', 'Vectors', 'Probability') },
+    { name: 'Accountancy', code: '320', fac: 'Menon', streams: ['Commerce'], chapters: chapters('Basics of Accounting', 'Journal & Ledger', 'Financial Statements', 'Partnership Accounts') },
+    { name: 'Business Studies', code: '319', fac: 'Nair', streams: ['Commerce'], chapters: chapters('Nature of Business', 'Forms of Organisation', 'Management Principles', 'Marketing') },
   ] },
-  { uni: niosSSLC, subjects: [
-    { name: 'Mathematics', code: '211', fac: 'Prakash', chapters: chapters('Real Numbers', 'Polynomials', 'Linear Equations', 'Trigonometry', 'Statistics') },
-    { name: 'Science & Technology', code: '212', fac: 'Suresh', chapters: chapters('Life Processes', 'Electricity', 'Chemical Reactions', 'Light & Reflection') },
-    { name: 'Social Science', code: '213', fac: 'Nair', chapters: chapters('Nationalism in India', 'Resources & Development', 'Democratic Politics', 'Money & Credit') },
-    { name: 'English', code: '202', fac: 'Pillai', chapters: chapters('Reading Comprehension', 'Grammar in Use', 'Writing Skills', 'Literature Reader') },
-    { name: 'Hindi', code: '201', fac: 'Sebastian', chapters: chapters('गद्य खंड', 'पद्य खंड', 'व्याकरण', 'रचना') },
+  { uni: niosSSLC, streams: ['General'], subjects: [
+    { name: 'Mathematics', code: '211', fac: 'Prakash', streams: ['General'], chapters: chapters('Real Numbers', 'Polynomials', 'Linear Equations', 'Trigonometry', 'Statistics') },
+    { name: 'Science & Technology', code: '212', fac: 'Suresh', streams: ['General'], chapters: chapters('Life Processes', 'Electricity', 'Chemical Reactions', 'Light & Reflection') },
+    { name: 'Social Science', code: '213', fac: 'Nair', streams: ['General'], chapters: chapters('Nationalism in India', 'Resources & Development', 'Democratic Politics', 'Money & Credit') },
+    { name: 'English', code: '202', fac: 'Pillai', streams: ['General'], chapters: chapters('Reading Comprehension', 'Grammar in Use', 'Writing Skills', 'Literature Reader') },
+    { name: 'Hindi', code: '201', fac: 'Sebastian', streams: ['General'], chapters: chapters('गद्य खंड', 'पद्य खंड', 'व्याकरण', 'रचना') },
   ] },
 ];
 
 let niosRecCycle = 0;
 const niosBuilt = [];
 for (const group of NIOS) {
+  const streamsByName = {};
+  for (const name of group.streams) {
+    streamsByName[name] = await addNiosStream(group.uni.id, name);
+  }
   const subjects = [];
   for (const s of group.subjects) {
     const subj = await addNiosSubject(s.name, s.code);
-    await assignNiosSubject(group.uni.id, subj.id);
+    for (const streamName of s.streams) {
+      await assignNiosSubject(streamsByName[streamName].id, subj.id);
+    }
     const chapterRows = [];
     let n = 1;
     for (const title of s.chapters) {
@@ -545,14 +559,17 @@ for (const group of NIOS) {
     }
     subjects.push({ row: subj, def: s, chapters: chapterRows });
   }
-  niosBuilt.push({ uni: group.uni, subjects });
+  niosBuilt.push({ uni: group.uni, streamsByName, subjects });
 }
 
+const niosStreamOf = (uni, name) => niosBuilt.find((g) => g.uni.id === uni.id).streamsByName[name];
+
 const niosBatches = [];
-niosBatches.push(await addNiosBatch(niosPlusTwo.id, 'NIOS +2 2025 — Science', '2025'));
-niosBatches.push(await addNiosBatch(niosPlusTwo.id, 'NIOS +2 2026 — Commerce', '2026'));
-niosBatches.push(await addNiosBatch(niosSSLC.id, 'NIOS SSLC 2025', '2025'));
-niosBatches.push(await addNiosBatch(niosSSLC.id, 'NIOS SSLC 2026', '2026'));
+niosBatches.push(await addNiosBatch(niosStreamOf(niosPlusTwo, 'Science'),  'NIOS +2 2025', '2025'));
+niosBatches.push(await addNiosBatch(niosStreamOf(niosPlusTwo, 'Science'),  'NIOS +2 2026', '2026'));
+niosBatches.push(await addNiosBatch(niosStreamOf(niosPlusTwo, 'Commerce'), 'NIOS +2 2026', '2026'));
+niosBatches.push(await addNiosBatch(niosStreamOf(niosSSLC, 'General'), 'NIOS SSLC 2025', '2025'));
+niosBatches.push(await addNiosBatch(niosStreamOf(niosSSLC, 'General'), 'NIOS SSLC 2026', '2026'));
 
 async function addNiosClass(c) {
   const row = await one(await sql`
@@ -567,7 +584,10 @@ let niosClassCount = 0;
 for (const group of niosBuilt) {
   const groupBatches = niosBatches.filter((b) => b.nios_university_id === group.uni.id);
   for (const batch of groupBatches) {
-    for (const subj of group.subjects) {
+    const streamName = Object.keys(group.streamsByName)
+      .find((n) => group.streamsByName[n].id === batch.nios_stream_id);
+    // A batch can only be taught subjects carried by its own stream.
+    for (const subj of group.subjects.filter((s) => s.def.streams.includes(streamName))) {
       for (let i = 0; i < 4; i++) {
         const date = addDays(START, (niosClassCount * 3) % 120);
         const [start, end] = SLOTS[niosClassCount % SLOTS.length];
@@ -595,6 +615,7 @@ for (const group of niosBuilt) {
 const counts = await one(await sql`SELECT
   (SELECT count(*) FROM universities) universities,
   (SELECT count(*) FROM streams) streams,
+  (SELECT count(*) FROM nios_streams) nios_streams,
   (SELECT count(*) FROM faculty) faculty,
   (SELECT count(*) FROM subjects) subjects,
   (SELECT count(*) FROM chapters) chapters,

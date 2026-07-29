@@ -86,6 +86,9 @@ export default function NIOSClassesPage() {
   const [deleting, setDeleting] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
+  // Every stream-subject placement in the chosen university, so the subject list
+  // can be narrowed to whichever stream(s) the picked batch(es) belong to.
+  const [uniStreamSubjects, setUniStreamSubjects] = useState([]);
   // Common-subject fan-out: schedule one class across many batches of the university.
   const [multiBatch, setMultiBatch] = useState(false);
   const [selectedBatchIds, setSelectedBatchIds] = useState([]);
@@ -157,45 +160,83 @@ export default function NIOSClassesPage() {
 
   // ── Form cascade ──────────────────────────────────────────────────────────
 
-  // The syllabus (subjects → chapters) belongs to the university now, so choosing
-  // a university loads the subject list; the batch is just the cohort.
+  // The syllabus belongs to a STREAM, and a batch belongs to exactly one stream —
+  // so the university only narrows the batch list, and the batch decides which
+  // subjects are on offer.
   async function handleFormUniChange(v) {
     setForm({ ...form, nios_university_id: v, nios_batch_id: '', nios_chapter_ids: [] });
     setFormBatches(v ? allBatches.filter((b) => String(b.nios_university_id) === v) : allBatches);
     setFormBatchSubjects([]);
+    setUniStreamSubjects([]);
     setChaptersBySubject({});
     setPickerSubject('');
+    setSelectedBatchIds([]);
     if (v) {
       try {
-        const res = await client.get('/nios/university-subjects', { params: { nios_university_id: v } });
-        setFormBatchSubjects(res.data);
+        const res = await client.get('/nios/stream-subjects', { params: { nios_university_id: v } });
+        setUniStreamSubjects(res.data);
       } catch { /**/ }
     }
   }
 
+  // Subjects on offer for a set of batches: those carried by EVERY batch's
+  // stream, so a fanned-out class can only use a genuinely shared subject.
+  function subjectsForBatches(batchIds, placements = uniStreamSubjects) {
+    const streamIds = [...new Set(
+      batchIds
+        .map((id) => allBatches.find((b) => String(b.id) === String(id))?.nios_stream_id)
+        .filter(Boolean)
+        .map(String)
+    )];
+    if (streamIds.length === 0) return [];
+    const bySubject = new Map();
+    placements.forEach((p) => {
+      const key = String(p.nios_subject_id);
+      if (!bySubject.has(key)) bySubject.set(key, { row: p, streams: new Set() });
+      bySubject.get(key).streams.add(String(p.nios_stream_id));
+    });
+    return [...bySubject.values()]
+      .filter(({ streams }) => streamIds.every((sid) => streams.has(sid)))
+      .map(({ row }) => row)
+      .sort((a, b) => a.subject_name.localeCompare(b.subject_name));
+  }
+
   function handleFormBatchChange(v) {
-    setForm((f) => ({ ...f, nios_batch_id: v }));
+    setForm((f) => ({ ...f, nios_batch_id: v, nios_chapter_ids: [] }));
+    setFormBatchSubjects(subjectsForBatches([v]));
+    setChaptersBySubject({});
+    setPickerSubject('');
   }
 
   function handleMultiBatchToggle(v) {
     setMultiBatch(v);
     setSelectedBatchIds([]);
-    setForm((f) => ({ ...f, nios_batch_id: '' }));
+    setFormBatchSubjects([]);
+    setChaptersBySubject({});
+    setPickerSubject('');
+    setForm((f) => ({ ...f, nios_batch_id: '', nios_chapter_ids: [] }));
   }
 
   function toggleBatchSelection(id) {
     const s = String(id);
-    setSelectedBatchIds((prev) => prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s]);
+    setSelectedBatchIds((prev) => {
+      const next = prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s];
+      // The shared-subject list shrinks as more streams join the selection.
+      setFormBatchSubjects(subjectsForBatches(next));
+      setPickerSubject('');
+      setForm((f) => ({ ...f, nios_chapter_ids: [] }));
+      return next;
+    });
   }
 
-  // Load (once) and cache the chapters for a given subject in this university
+  // Load (once) and cache the chapters for a given subject in this stream
   async function loadChaptersForSubject(subjectId, current) {
     const map = current || chaptersBySubject;
     if (!subjectId || map[subjectId]) return;
-    const us = formBatchSubjects.find((s) => String(s.nios_subject_id) === String(subjectId));
-    if (!us) return;
+    const ss = formBatchSubjects.find((s) => String(s.nios_subject_id) === String(subjectId));
+    if (!ss) return;
     try {
-      const res = await client.get('/nios/chapters', { params: { nios_university_subject_id: us.id } });
+      const res = await client.get('/nios/chapters', { params: { nios_stream_subject_id: ss.id } });
       setChaptersBySubject((prev) => ({ ...prev, [subjectId]: res.data }));
     } catch { /**/ }
   }
@@ -274,17 +315,19 @@ export default function NIOSClassesPage() {
 
     if (c.nios_university_id) {
       try {
-        const usRes = await client.get('/nios/university-subjects', { params: { nios_university_id: c.nios_university_id } });
-        setFormBatchSubjects(usRes.data);
+        const ssRes = await client.get('/nios/stream-subjects', { params: { nios_university_id: c.nios_university_id } });
+        setUniStreamSubjects(ssRes.data);
+        const forBatch = subjectsForBatches([c.nios_batch_id], ssRes.data);
+        setFormBatchSubjects(forBatch);
 
         // Preload chapters for every subject this class already covers so the
         // selected-chapter chips resolve to names.
         const subjectIds = [...new Set((c.chapters || []).map((ch) => ch.nios_subject_id).filter(Boolean))];
         const map = {};
         for (const subjectId of subjectIds) {
-          const us = usRes.data.find((s) => String(s.nios_subject_id) === String(subjectId));
-          if (us) {
-            const chapRes = await client.get('/nios/chapters', { params: { nios_university_subject_id: us.id } });
+          const ss = ssRes.data.find((s) => String(s.nios_subject_id) === String(subjectId));
+          if (ss) {
+            const chapRes = await client.get('/nios/chapters', { params: { nios_stream_subject_id: ss.id } });
             map[subjectId] = chapRes.data;
           }
         }
@@ -668,7 +711,7 @@ export default function NIOSClassesPage() {
                   <div className="col-span-2 flex items-center justify-between rounded-md border border-slate-200 dark:border-slate-700 px-3 py-2">
                     <div>
                       <Label className="mb-0">Common subject</Label>
-                      <p className="text-xs text-slate-400">Schedule this class for multiple batches of this university at once.</p>
+                      <p className="text-xs text-slate-400">Schedule this class for multiple batches at once. Only subjects shared by every selected batch's stream stay available.</p>
                     </div>
                     <Switch checked={multiBatch} onCheckedChange={handleMultiBatchToggle} />
                   </div>
@@ -681,17 +724,22 @@ export default function NIOSClassesPage() {
                     ) : formBatches.length === 0 ? (
                       <p className="text-xs text-slate-400">No batches in this university.</p>
                     ) : (
-                      <div className="space-y-1 rounded-md border border-slate-200 dark:border-slate-700 p-3 max-h-56 overflow-y-auto">
-                        {formBatches.map((b) => (
-                          <label key={b.id} className="flex items-center gap-2 text-sm cursor-pointer pl-1">
-                            <input
-                              type="checkbox"
-                              className="h-4 w-4"
-                              checked={selectedBatchIds.includes(String(b.id))}
-                              onChange={() => toggleBatchSelection(b.id)}
-                            />
-                            {b.name}
-                          </label>
+                      <div className="space-y-2 rounded-md border border-slate-200 dark:border-slate-700 p-3 max-h-56 overflow-y-auto">
+                        {[...new Set(formBatches.map((b) => b.stream_name || 'No stream'))].sort().map((streamName) => (
+                          <div key={streamName} className="space-y-1">
+                            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">{streamName}</p>
+                            {formBatches.filter((b) => (b.stream_name || 'No stream') === streamName).map((b) => (
+                              <label key={b.id} className="flex items-center gap-2 text-sm cursor-pointer pl-3">
+                                <input
+                                  type="checkbox"
+                                  className="h-4 w-4"
+                                  checked={selectedBatchIds.includes(String(b.id))}
+                                  onChange={() => toggleBatchSelection(b.id)}
+                                />
+                                {b.name}
+                              </label>
+                            ))}
+                          </div>
                         ))}
                       </div>
                     )}
@@ -722,10 +770,22 @@ export default function NIOSClassesPage() {
                     </div>
                   )}
 
-                  <Select value={pickerSubject} onValueChange={handlePickerSubjectChange} disabled={!form.nios_batch_id}>
-                    <SelectTrigger className="w-full"><SelectValue placeholder={form.nios_batch_id ? 'Select a subject to add its chapters' : 'Select a batch first'} /></SelectTrigger>
+                  <Select
+                    value={pickerSubject}
+                    onValueChange={handlePickerSubjectChange}
+                    disabled={multiBatch ? selectedBatchIds.length === 0 : !form.nios_batch_id}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder={
+                        (multiBatch ? selectedBatchIds.length > 0 : !!form.nios_batch_id)
+                          ? 'Select a subject to add its chapters'
+                          : `Select a batch first`
+                      } />
+                    </SelectTrigger>
                     <SelectContent>
-                      {formBatchSubjects.map((s) => <SelectItem key={s.nios_subject_id} value={String(s.nios_subject_id)}>{s.subject_name}</SelectItem>)}
+                      {formBatchSubjects.length === 0
+                        ? <SelectItem value="__none" disabled>No subjects shared by the selected batches</SelectItem>
+                        : formBatchSubjects.map((s) => <SelectItem key={s.nios_subject_id} value={String(s.nios_subject_id)}>{s.subject_name}</SelectItem>)}
                     </SelectContent>
                   </Select>
 

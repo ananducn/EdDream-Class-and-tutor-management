@@ -20,19 +20,19 @@ const BOOL_FIELDS = new Set([
   'upload_student_app', 'upload_harddisk',
 ]);
 
-// Chapters in a university-subject, each with its recording folded in.
+// Chapters in a stream-subject, each with its recording folded in.
 router.get('/', auth, async (req, res, next) => {
   try {
-    const { nios_university_subject_id, nios_subject_id } = req.query;
-    // Chapters + recordings now root on the subject (shared across universities).
-    // Still accept a placement id and resolve it to the subject.
+    const { nios_stream_subject_id, nios_subject_id } = req.query;
+    // Chapters + recordings root on the subject (shared across every stream the
+    // subject is placed in). Still accept a placement id and resolve it.
     let subjectId = nios_subject_id ? Number(nios_subject_id) : null;
-    if (!subjectId && nios_university_subject_id) {
-      const p = await sql`SELECT nios_subject_id FROM nios_university_subjects WHERE id = ${nios_university_subject_id}`;
+    if (!subjectId && nios_stream_subject_id) {
+      const p = await sql`SELECT nios_subject_id FROM nios_stream_subjects WHERE id = ${nios_stream_subject_id}`;
       subjectId = p[0]?.nios_subject_id ?? null;
     }
     if (!subjectId) {
-      return res.status(400).json({ error: 'nios_subject_id or nios_university_subject_id is required.' });
+      return res.status(400).json({ error: 'nios_subject_id or nios_stream_subject_id is required.' });
     }
     const rows = await sql`
       SELECT ch.id AS nios_chapter_id, ch.title AS chapter_title, ch.chapter_order,
@@ -53,16 +53,27 @@ router.get('/', auth, async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-// Recording progress across a NIOS university's whole syllabus, grouped by subject.
+// Recording progress across a NIOS syllabus, grouped by subject. Scope to one
+// stream with nios_stream_id, or to every stream in a university with
+// nios_university_id.
 router.get('/overview', auth, async (req, res, next) => {
   try {
-    const { nios_university_id } = req.query;
-    if (!nios_university_id) return res.status(400).json({ error: 'nios_university_id is required.' });
+    const { nios_university_id, nios_stream_id } = req.query;
+    if (!nios_university_id && !nios_stream_id) {
+      return res.status(400).json({ error: 'nios_university_id or nios_stream_id is required.' });
+    }
+    const conditions = [];
+    const params = [];
+    let i = 1;
+    if (nios_stream_id) { conditions.push(`ss.nios_stream_id = $${i++}`); params.push(nios_stream_id); }
+    if (nios_university_id) { conditions.push(`st.nios_university_id = $${i++}`); params.push(nios_university_id); }
 
-    const rows = await sql`
-      SELECT
-        us.id                 AS nios_university_subject_id,
-        us.nios_subject_id,
+    const rows = await sql.query(
+      `SELECT
+        ss.id                 AS nios_stream_subject_id,
+        ss.nios_subject_id,
+        ss.nios_stream_id,
+        st.name               AS stream_name,
         sub.name              AS subject_name,
         ch.id                 AS chapter_id,
         ch.title              AS chapter_title,
@@ -72,13 +83,15 @@ router.get('/overview', auth, async (req, res, next) => {
            COALESCE(r.upload_youtube,false) OR COALESCE(r.upload_gdrive,false) OR
            COALESCE(r.upload_student_app,false) OR COALESCE(r.upload_harddisk,false)
         ))                                                                       AS recorded_not_uploaded
-      FROM nios_university_subjects us
-      JOIN  nios_subjects sub ON sub.id = us.nios_subject_id
-      LEFT JOIN nios_chapters ch ON ch.nios_subject_id = us.nios_subject_id AND ch.is_active = true
+      FROM nios_stream_subjects ss
+      JOIN  nios_streams  st ON st.id = ss.nios_stream_id
+      JOIN  nios_subjects sub ON sub.id = ss.nios_subject_id
+      LEFT JOIN nios_chapters ch ON ch.nios_subject_id = ss.nios_subject_id AND ch.is_active = true
       LEFT JOIN nios_chapter_recordings r ON r.nios_chapter_id = ch.id
-      WHERE us.nios_university_id = ${nios_university_id}
-      ORDER BY sub.name, ch.chapter_order NULLS LAST
-    `;
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY st.name, sub.name, ch.chapter_order NULLS LAST`,
+      params
+    );
     res.json(rows);
   } catch (err) { next(err); }
 });
