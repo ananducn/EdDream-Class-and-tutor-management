@@ -16,14 +16,18 @@ router.get('/summary', auth, cacheRoute(30000), async (req, res, next) => {
       facultyHoursRows,
       activityRows,
     ] = await Promise.all([
-      sql`SELECT COUNT(*) AS count FROM class_entries
+      // A common-subject class is one class taught to several batches — one row
+      // per batch sharing a class_group_id. Counting rows would report it once
+      // per batch, so collapse each group to a single class. COALESCE(...) to the
+      // row's own id gives ungrouped classes a group of one.
+      sql`SELECT COUNT(DISTINCT COALESCE(class_group_id, id)) AS count FROM class_entries
           WHERE DATE_TRUNC('month', date) = DATE_TRUNC('month', CURRENT_DATE)`,
 
-      sql`SELECT COUNT(*) AS count FROM class_entries
+      sql`SELECT COUNT(DISTINCT COALESCE(class_group_id, id)) AS count FROM class_entries
           WHERE class_mode = 'online'
           AND DATE_TRUNC('month', date) = DATE_TRUNC('month', CURRENT_DATE)`,
 
-      sql`SELECT COUNT(*) AS count FROM class_entries
+      sql`SELECT COUNT(DISTINCT COALESCE(class_group_id, id)) AS count FROM class_entries
           WHERE class_mode = 'offline'
           AND DATE_TRUNC('month', date) = DATE_TRUNC('month', CURRENT_DATE)`,
 

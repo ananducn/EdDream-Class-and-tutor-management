@@ -31,6 +31,7 @@ import NIOSTimetablePage from '@/pages/nios/NIOSTimetablePage';
 import NIOSTimetableUniversityPage from '@/pages/nios/NIOSTimetableUniversityPage';
 import NIOSTimetableCalendarPage from '@/pages/nios/NIOSTimetableCalendarPage';
 import NIOSRecordingOverviewPage from '@/pages/nios/NIOSRecordingOverviewPage';
+import NIOSReportsPage from '@/pages/nios/NIOSReportsPage';
 
 function ProtectedRoute({ children, adminOnly = false }) {
   const { user, isLoading, isAdmin } = useAuth();
@@ -98,6 +99,7 @@ export default function App() {
           <Route path="/nios/timetable/:uniId" element={<ProtectedRoute><NIOSTimetableUniversityPage /></ProtectedRoute>} />
           <Route path="/nios/timetable/:uniId/:batchId" element={<ProtectedRoute><NIOSTimetableCalendarPage /></ProtectedRoute>} />
           <Route path="/nios/recording-overview" element={<ProtectedRoute><NIOSRecordingOverviewPage /></ProtectedRoute>} />
+          <Route path="/nios/reports" element={<ProtectedRoute><NIOSReportsPage /></ProtectedRoute>} />
 
           <Route path="/users" element={<ProtectedRoute adminOnly><UsersPage /></ProtectedRoute>} />
           <Route path="/activity-log" element={<ProtectedRoute adminOnly><ActivityLogPage /></ProtectedRoute>} />

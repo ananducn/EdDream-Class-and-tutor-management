@@ -42,6 +42,7 @@ const NAV_NIOS = [
   { to: '/nios/classes',            label: 'NIOS Classes',            icon: faChalkboardUser },
   { to: '/nios/timetable',          label: 'NIOS Timetable',          icon: faTableCells },
   { to: '/nios/recording-overview', label: 'NIOS Recordings', icon: faVideo },
+  { to: '/nios/reports',            label: 'NIOS Reports',            icon: faChartBar },
 ];
 
 // ── Sub-components ───────────────────────────────────────────────────────────

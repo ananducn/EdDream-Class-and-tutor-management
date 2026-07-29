@@ -4,6 +4,7 @@ import { auth } from '../middleware/auth.js';
 import { logActivity } from '../middleware/logger.js';
 import { DAYS, dateForSlot, nowInZone } from '../lib/week.js';
 import { takenEditLock } from '../lib/editWindow.js';
+import { normalizeNiosSlotGroups, normalizeNiosClassGroups } from '../lib/groups.js';
 
 const router = express.Router();
 
@@ -121,13 +122,203 @@ async function syncNiosClassForSlot(slot, timetable, userId, { allowCreate = tru
   `;
 }
 
+// The classes a common slot creates are one logical class taught to several
+// batches, exactly like a common class made from the NIOS Classes page — so they
+// need the same nios_class_group_id. Without it every count treats them as N
+// separate classes and the Classes list shows N rows instead of one. Call after
+// the group's membership settles. Only ever touches slot-created classes, since a
+// Classes-page class has no nios_timetable_slot_id.
+async function syncNiosClassGroupForSlots(slotIds) {
+  if (!slotIds || slotIds.length === 0) return;
+  const classes = await sql`
+    SELECT id FROM nios_class_entries WHERE nios_timetable_slot_id = ANY(${slotIds}) ORDER BY id
+  `;
+  if (classes.length === 0) return;
+  // A group of one is not shared with anything, so it carries no group id.
+  const groupId = classes.length > 1 ? classes[0].id : null;
+  await sql`UPDATE nios_class_entries SET nios_class_group_id = ${groupId} WHERE id = ANY(${classes.map((c) => c.id)})`;
+}
+
 // Removing a slot removes the class it created — nios_class_entries.
 // nios_timetable_slot_id is ON DELETE SET NULL, so without this the class row
 // would outlive its slot as an orphan. Call BEFORE deleting the slots.
 async function deleteNiosClassesForSlots(slotIds) {
   if (!slotIds || slotIds.length === 0) return 0;
+  // Remember the class groups involved: a common class created from the NIOS
+  // Classes page spreads one nios_class_group_id over several batches, each with
+  // its own slot, so removing one slot can leave the rest of that group pointing
+  // at a row we are about to delete.
+  const doomed = await sql`SELECT id, nios_class_group_id FROM nios_class_entries WHERE nios_timetable_slot_id = ANY(${slotIds})`;
   const gone = await sql`DELETE FROM nios_class_entries WHERE nios_timetable_slot_id = ANY(${slotIds}) RETURNING id`;
+  await normalizeNiosClassGroups(doomed.map((c) => c.nios_class_group_id));
   return gone.length;
+}
+
+// The timetable for another batch in the SAME week as `source`, creating one if
+// that batch has no grid for the week yet. Lets a common slot fan out without the
+// user having to visit each batch's timetable first.
+async function findOrCreateNiosWeekTimetable(batchId, source, userId) {
+  const batch = await sql`SELECT id, name, nios_university_id FROM nios_batches WHERE id = ${batchId}`;
+  if (!batch[0]) return null;
+
+  const found = await sql`
+    SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date
+    FROM nios_timetables
+    WHERE nios_batch_id = ${batchId} AND week_start_date = ${source.week_start_date}
+    ORDER BY created_at LIMIT 1
+  `;
+  if (found[0]) return { ...found[0], batch_name: batch[0].name };
+
+  const label = `Week of ${source.week_start_date} – ${batch[0].name}`;
+  const made = await sql`
+    INSERT INTO nios_timetables (name, nios_university_id, nios_batch_id, week_start_date, created_by)
+    VALUES (${label}, ${batch[0].nios_university_id}, ${batchId}, ${source.week_start_date}, ${userId})
+    RETURNING *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date
+  `;
+  return { ...made[0], batch_name: batch[0].name };
+}
+
+// Every slot id that an edit/delete on `slotId` should touch: the whole group for
+// a common class, or just the slot itself. Returns [] when the slot doesn't exist
+// in the given timetable, so callers can 404.
+async function niosGroupSlotIds(slotId, timetableId) {
+  const rows = await sql`
+    SELECT id, nios_slot_group_id FROM nios_timetable_slots
+    WHERE id = ${slotId} AND nios_timetable_id = ${timetableId}
+  `;
+  if (!rows[0]) return [];
+  if (!rows[0].nios_slot_group_id) return [rows[0].id];
+  const group = await sql`SELECT id FROM nios_timetable_slots WHERE nios_slot_group_id = ${rows[0].nios_slot_group_id}`;
+  return group.map((r) => r.id);
+}
+
+// True when `start`–`end` overlaps an existing slot on that day in `timetableId`,
+// ignoring any slot in `exceptIds` (the group's own members during an edit).
+async function niosSlotClashes({ timetableId, day, start, end, exceptIds = [] }) {
+  const sameDay = await sql`
+    SELECT id, start_time, end_time FROM nios_timetable_slots
+    WHERE nios_timetable_id = ${timetableId} AND day_of_week = ${day}
+  `;
+  return sameDay.some((s) => {
+    if (exceptIds.includes(s.id)) return false;
+    if (!start || !end || !s.start_time || !s.end_time) return false;
+    return start.slice(0, 5) < s.end_time.slice(0, 5) && s.start_time.slice(0, 5) < end.slice(0, 5);
+  });
+}
+
+// A slot may only be fanned out to a batch whose stream actually carries every
+// subject its chapters belong to — otherwise a Commerce-only subject could be
+// scheduled onto a Science batch, which is the whole thing streams exist to stop.
+// The UI already filters the picker; this is the same rule at the API boundary.
+// Returns an error string, or null when every batch qualifies.
+async function batchesMissingSubjects(batchIds, chapterIds) {
+  if (!batchIds.length || !chapterIds.length) return null;
+  const subjects = await sql`
+    SELECT DISTINCT nios_subject_id FROM nios_chapters WHERE id = ANY(${chapterIds})
+  `;
+  const needed = subjects.map((s) => s.nios_subject_id).filter(Boolean);
+  if (!needed.length) return null;
+
+  for (const bId of batchIds) {
+    const rows = await sql`
+      SELECT b.name AS batch_name, st.name AS stream_name,
+             (SELECT array_agg(ss.nios_subject_id)
+              FROM nios_stream_subjects ss WHERE ss.nios_stream_id = b.nios_stream_id) AS carried
+      FROM nios_batches b
+      LEFT JOIN nios_streams st ON st.id = b.nios_stream_id
+      WHERE b.id = ${bId}
+    `;
+    if (!rows[0]) continue;
+    const carried = new Set(rows[0].carried || []);
+    const missing = needed.filter((sid) => !carried.has(sid));
+    if (missing.length) {
+      const names = await sql`SELECT name FROM nios_subjects WHERE id = ANY(${missing}) ORDER BY name`;
+      return `${rows[0].batch_name} is in the ${rows[0].stream_name || 'unassigned'} stream, which does not carry ${names.map((n) => n.name).join(', ')}.`;
+    }
+  }
+  return null;
+}
+
+// Copy a slot's chapter set onto another slot. NIOS slots carry many chapters, so
+// a fanned-out copy is only equivalent if those come along too.
+async function copySlotChapters(fromSlotId, toSlotId) {
+  const chapters = await sql`
+    SELECT nios_chapter_id FROM nios_timetable_slot_chapters WHERE nios_timetable_slot_id = ${fromSlotId}
+  `;
+  await syncSlotChapters(toSlotId, chapters.map((c) => c.nios_chapter_id));
+}
+
+// Bring a slot's sharing in line with `desiredBatchIds` (the OTHER batches it
+// should belong to). Adds copies for newly ticked batches, deletes the copies of
+// unticked ones, and keeps nios_slot_group_id consistent — cleared when the slot
+// ends up alone again. `primary` is never removed. Returns the resulting members,
+// or { error } if a new batch already has a clashing slot (checked before writing).
+async function reconcileNiosSlotGroup({ primary, desiredBatchIds, existing, userId }) {
+  const source = await sql`
+    SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date
+    FROM nios_timetables WHERE id = ${primary.nios_timetable_id}
+  `;
+  if (!source[0]) return existing;
+
+  const withBatch = [];
+  for (const slot of existing) {
+    const tt = await sql`SELECT nios_batch_id FROM nios_timetables WHERE id = ${slot.nios_timetable_id}`;
+    withBatch.push({ slot, batchId: tt[0]?.nios_batch_id ?? null });
+  }
+
+  const desired = new Set(desiredBatchIds.filter((b) => b !== source[0].nios_batch_id));
+  const keep = withBatch.filter((m) => m.slot.id === primary.id || desired.has(m.batchId));
+  const drop = withBatch.filter((m) => m.slot.id !== primary.id && !desired.has(m.batchId));
+  const alreadyThere = new Set(keep.map((m) => m.batchId));
+  const toAdd = [...desired].filter((b) => !alreadyThere.has(b));
+
+  // Resolve target timetables and pre-check clashes before any write.
+  const primaryChapters = (await sql`
+    SELECT nios_chapter_id FROM nios_timetable_slot_chapters WHERE nios_timetable_slot_id = ${primary.id}
+  `).map((c) => c.nios_chapter_id);
+  const mismatch = await batchesMissingSubjects(toAdd, primaryChapters);
+  if (mismatch) return { error: mismatch };
+
+  const targets = [];
+  for (const bId of toAdd) {
+    const target = await findOrCreateNiosWeekTimetable(bId, source[0], userId);
+    if (!target) continue;
+    if (await niosSlotClashes({
+      timetableId: target.id, day: primary.day_of_week,
+      start: primary.start_time, end: primary.end_time,
+    })) {
+      return { error: `A slot already exists on ${primary.day_of_week} at this time for ${target.batch_name}.` };
+    }
+    targets.push(target);
+  }
+
+  if (drop.length > 0) {
+    const dropIds = drop.map((m) => m.slot.id);
+    await deleteNiosClassesForSlots(dropIds);
+    await sql`DELETE FROM nios_timetable_slots WHERE id = ANY(${dropIds})`;
+  }
+
+  const members = keep.map((m) => m.slot);
+  for (const target of targets) {
+    const made = await sql`
+      INSERT INTO nios_timetable_slots (nios_timetable_id, day_of_week, start_time, end_time, faculty_id, nios_subject_id, notes, class_taken_status)
+      VALUES (${target.id}, ${primary.day_of_week}, ${primary.start_time || null}, ${primary.end_time || null},
+              ${primary.faculty_id || null}, ${primary.nios_subject_id || null}, ${primary.notes || null}, ${primary.class_taken_status})
+      RETURNING *
+    `;
+    await copySlotChapters(primary.id, made[0].id);
+    if (made[0].class_taken_status !== 'not_taken') {
+      await syncNiosClassForSlot(made[0], target, userId);
+    }
+    members.push(made[0]);
+  }
+
+  // One member left means it is no longer a common class.
+  const groupId = members.length > 1 ? (primary.nios_slot_group_id || primary.id) : null;
+  await sql`UPDATE nios_timetable_slots SET nios_slot_group_id = ${groupId} WHERE id = ANY(${members.map((m) => m.id)})`;
+  members.forEach((m) => { m.nios_slot_group_id = groupId; });
+  await syncNiosClassGroupForSlots(members.map((m) => m.id));
+  return members;
 }
 
 async function niosSlotContext(row, timetableId) {
@@ -190,8 +381,27 @@ router.get('/:id', auth, async (req, res, next) => {
     `;
     if (!timetables[0]) return res.status(404).json({ error: 'Not found.' });
 
+    // shared_batches lists the OTHER batches a common-class slot also belongs to,
+    // so the grid can badge it and the edit dialog can pre-tick them.
     const slots = await sql.query(
-      `SELECT ts.*, f.name AS faculty_name, sub.name AS subject_name, ${SLOT_CHAPTERS_AGG}
+      `SELECT ts.*, f.name AS faculty_name, sub.name AS subject_name, ${SLOT_CHAPTERS_AGG},
+              COALESCE((
+                SELECT array_agg(b2.name ORDER BY b2.name)
+                FROM nios_timetable_slots ts2
+                JOIN nios_timetables t2 ON t2.id = ts2.nios_timetable_id
+                JOIN nios_batches b2 ON b2.id = t2.nios_batch_id
+                WHERE ts.nios_slot_group_id IS NOT NULL
+                  AND ts2.nios_slot_group_id = ts.nios_slot_group_id
+                  AND ts2.id <> ts.id
+              ), '{}') AS shared_batches,
+              COALESCE((
+                SELECT array_agg(t2.nios_batch_id)
+                FROM nios_timetable_slots ts2
+                JOIN nios_timetables t2 ON t2.id = ts2.nios_timetable_id
+                WHERE ts.nios_slot_group_id IS NOT NULL
+                  AND ts2.nios_slot_group_id = ts.nios_slot_group_id
+                  AND ts2.id <> ts.id
+              ), '{}') AS shared_batch_ids
        FROM nios_timetable_slots ts
        LEFT JOIN faculty f ON f.id = ts.faculty_id
        LEFT JOIN nios_subjects sub ON sub.id = ts.nios_subject_id
@@ -242,10 +452,13 @@ router.delete('/:id', auth, async (req, res, next) => {
   try {
     if (req.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden.' });
     // Slots cascade with the timetable, so their classes have to go first.
-    const slotIds = (await sql`SELECT id FROM nios_timetable_slots WHERE nios_timetable_id = ${req.params.id}`).map((s) => s.id);
+    const slots = await sql`SELECT id, nios_slot_group_id FROM nios_timetable_slots WHERE nios_timetable_id = ${req.params.id}`;
+    const slotIds = slots.map((s) => s.id);
     const classesRemoved = await deleteNiosClassesForSlots(slotIds);
     const rows = await sql`DELETE FROM nios_timetables WHERE id = ${req.params.id} RETURNING *`;
     if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
+    // Those slots may have been members of common classes in other batches.
+    await normalizeNiosSlotGroups(slots.map((s) => s.nios_slot_group_id));
     await logActivity(req.user.id, req.user.name, req.user.role, 'delete_nios_timetable', 'nios_timetable', rows[0].id,
       `Deleted NIOS timetable: ${rows[0].name}${slotIds.length ? ` (${slotIds.length} slots, ${classesRemoved} linked classes)` : ''}`);
     res.json({ message: 'Deleted.', slots_removed: slotIds.length, classes_removed: classesRemoved });
@@ -256,7 +469,7 @@ router.delete('/:id', auth, async (req, res, next) => {
 
 router.post('/:id/slots', auth, async (req, res, next) => {
   try {
-    const { day_of_week, start_time, end_time, faculty_id, nios_subject_id, nios_chapter_ids, notes, class_taken_status } = req.body;
+    const { day_of_week, start_time, end_time, faculty_id, nios_subject_id, nios_chapter_ids, notes, class_taken_status, nios_batch_ids } = req.body;
     if (!day_of_week || !DAYS.includes(day_of_week)) {
       return res.status(400).json({ error: 'Valid day_of_week is required.' });
     }
@@ -265,29 +478,62 @@ router.post('/:id/slots', auth, async (req, res, next) => {
     const tt = await sql`SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date FROM nios_timetables WHERE id = ${req.params.id}`;
     if (!tt[0]) return res.status(404).json({ error: 'Timetable not found.' });
 
-    const sameDay = await sql`
-      SELECT start_time, end_time FROM nios_timetable_slots
-      WHERE nios_timetable_id = ${req.params.id} AND day_of_week = ${day_of_week}
-    `;
-    const clash = sameDay.some((s) => {
-      if (!start_time || !end_time || !s.start_time || !s.end_time) return false;
-      return start_time.slice(0, 5) < s.end_time.slice(0, 5) && s.start_time.slice(0, 5) < end_time.slice(0, 5);
-    });
-    if (clash) return res.status(409).json({ error: `A slot already exists on ${day_of_week} at this time.` });
+    // A "common class" is the same slot in several batches' grids for the same
+    // week. Resolve every extra batch to its own timetable for this week (creating
+    // one if that batch has none yet), then write one slot per timetable.
+    const extraBatchIds = (Array.isArray(nios_batch_ids) ? nios_batch_ids : [])
+      .map(Number)
+      .filter((b) => b && b !== tt[0].nios_batch_id);
 
-    const rows = await sql`
-      INSERT INTO nios_timetable_slots (nios_timetable_id, day_of_week, start_time, end_time, faculty_id, nios_subject_id, notes, class_taken_status)
-      VALUES (${req.params.id}, ${day_of_week}, ${start_time || null}, ${end_time || null},
-              ${faculty_id || null}, ${nios_subject_id || null}, ${notes || null}, ${class_taken_status || 'scheduled'})
-      RETURNING *
-    `;
-    await syncSlotChapters(rows[0].id, chapterIds);
-    if (rows[0].class_taken_status !== 'not_taken') {
-      await syncNiosClassForSlot(rows[0], tt[0], req.user.id);
+    const mismatch = await batchesMissingSubjects(extraBatchIds, chapterIds);
+    if (mismatch) return res.status(409).json({ error: mismatch });
+
+    const targets = [tt[0]];
+    for (const bId of extraBatchIds) {
+      const found = await findOrCreateNiosWeekTimetable(bId, tt[0], req.user.id);
+      if (found) targets.push(found);
     }
-    const addCtx = await niosSlotContext(rows[0], req.params.id);
-    await logActivity(req.user.id, req.user.name, req.user.role, 'add_nios_slot', 'nios_timetable_slot', rows[0].id, `Added NIOS slot: ${niosSlotDetail(rows[0], addCtx)}`);
-    res.status(201).json(rows[0]);
+
+    // Pre-validate every target so one clash aborts the whole group before any
+    // row is written — the same all-or-nothing rule the Classes page uses.
+    for (const target of targets) {
+      if (await niosSlotClashes({ timetableId: target.id, day: day_of_week, start: start_time, end: end_time })) {
+        const who = target.id === tt[0].id ? 'this batch' : (target.batch_name || `batch ${target.nios_batch_id}`);
+        return res.status(409).json({ error: `A slot already exists on ${day_of_week} at this time for ${who}.` });
+      }
+    }
+
+    const created = [];
+    for (const target of targets) {
+      const rows = await sql`
+        INSERT INTO nios_timetable_slots (nios_timetable_id, day_of_week, start_time, end_time, faculty_id, nios_subject_id, notes, class_taken_status)
+        VALUES (${target.id}, ${day_of_week}, ${start_time || null}, ${end_time || null},
+                ${faculty_id || null}, ${nios_subject_id || null}, ${notes || null}, ${class_taken_status || 'scheduled'})
+        RETURNING *
+      `;
+      await syncSlotChapters(rows[0].id, chapterIds);
+      if (rows[0].class_taken_status !== 'not_taken') {
+        await syncNiosClassForSlot(rows[0], target, req.user.id);
+      }
+      created.push({ slot: rows[0], timetable: target });
+    }
+
+    // Tie the copies together (group id = the first slot's id) so a later edit or
+    // delete on any one of them applies to the whole set.
+    if (created.length > 1) {
+      const groupId = created[0].slot.id;
+      const ids = created.map((c) => c.slot.id);
+      await sql`UPDATE nios_timetable_slots SET nios_slot_group_id = ${groupId} WHERE id = ANY(${ids})`;
+      created.forEach((c) => { c.slot.nios_slot_group_id = groupId; });
+    }
+    await syncNiosClassGroupForSlots(created.map((c) => c.slot.id));
+
+    for (const c of created) {
+      const ctx = await niosSlotContext(c.slot, c.timetable.id);
+      await logActivity(req.user.id, req.user.name, req.user.role, 'add_nios_slot', 'nios_timetable_slot', c.slot.id,
+        `Added NIOS slot${created.length > 1 ? ' (common class)' : ''}: ${niosSlotDetail(c.slot, ctx)}`);
+    }
+    res.status(201).json({ ...created[0].slot, shared_count: created.length });
   } catch (err) { next(err); }
 });
 
@@ -303,7 +549,7 @@ router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
       if (locked) return res.status(403).json({ error: locked });
     }
 
-    const { day_of_week, start_time, end_time, faculty_id, nios_subject_id, nios_chapter_ids, notes, class_taken_status } = req.body;
+    const { day_of_week, start_time, end_time, faculty_id, nios_subject_id, nios_chapter_ids, notes, class_taken_status, nios_batch_ids } = req.body;
 
     if (class_taken_status === 'taken') {
       const [tt, existing] = await Promise.all([
@@ -335,50 +581,71 @@ router.put('/:id/slots/:slotId', auth, async (req, res, next) => {
         notes = CASE WHEN ${notes !== undefined}::boolean THEN ${notes || null}::text ELSE notes END,
         class_taken_status = COALESCE(${class_taken_status || null}, class_taken_status),
         updated_at = NOW()
-      WHERE id = ${req.params.slotId} AND nios_timetable_id = ${req.params.id}
+      WHERE id = ANY(${await niosGroupSlotIds(req.params.slotId, req.params.id)})
       RETURNING *
     `;
-    if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
+    const primary = rows.find((r) => String(r.id) === String(req.params.slotId));
+    if (!primary) return res.status(404).json({ error: 'Not found.' });
 
     // Only rewrite chapters when the client explicitly sends the array (a bare
     // status change from the calendar omits it and must keep existing chapters).
+    // A common class shares one chapter set, so every member is rewritten.
     if (Array.isArray(nios_chapter_ids)) {
-      await syncSlotChapters(rows[0].id, nios_chapter_ids.filter(Boolean));
+      const cleaned = nios_chapter_ids.filter(Boolean);
+      for (const row of rows) await syncSlotChapters(row.id, cleaned);
     }
 
-    // Any field edit propagates to the linked class; only an explicit status
-    // change may create one that didn't exist.
-    {
-      const tt = await sql`SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date FROM nios_timetables WHERE id = ${req.params.id}`;
-      await syncNiosClassForSlot(rows[0], tt[0], req.user.id, { allowCreate: !!class_taken_status });
+    // Changing WHO the slot is shared with. `nios_batch_ids` is the full desired
+    // set of OTHER batches; absent means "leave sharing alone".
+    let members = rows;
+    if (nios_batch_ids !== undefined) {
+      members = await reconcileNiosSlotGroup({
+        primary,
+        desiredBatchIds: Array.isArray(nios_batch_ids) ? nios_batch_ids.map(Number).filter(Boolean) : [],
+        existing: rows,
+        userId: req.user.id,
+      });
+      if (members.error) return res.status(409).json({ error: members.error });
     }
-    const updCtx = await niosSlotContext(rows[0], req.params.id);
-    await logActivity(req.user.id, req.user.name, req.user.role, 'update_nios_slot', 'nios_timetable_slot', rows[0].id,
-      `Updated NIOS slot (status: ${rows[0].class_taken_status}): ${niosSlotDetail(rows[0], updCtx)}`);
-    res.json(rows[0]);
+
+    // A common class is edited as a whole, so every batch's copy is re-synced.
+    // Any field edit propagates to the linked class, but only an explicit status
+    // change may create one that didn't exist.
+    for (const row of members) {
+      const tt = await sql`SELECT *, to_char(week_start_date, 'YYYY-MM-DD') AS week_start_date FROM nios_timetables WHERE id = ${row.nios_timetable_id}`;
+      await syncNiosClassForSlot(row, tt[0], req.user.id, { allowCreate: !!class_taken_status });
+    }
+    // Classes may have just been created by that sync, so group them now.
+    await syncNiosClassGroupForSlots(members.map((m) => m.id));
+    const updCtx = await niosSlotContext(primary, primary.nios_timetable_id);
+    await logActivity(req.user.id, req.user.name, req.user.role, 'update_nios_slot', 'nios_timetable_slot', primary.id,
+      `Updated NIOS slot${members.length > 1 ? ` (common class, ${members.length} batches)` : ''} (status: ${primary.class_taken_status}): ${niosSlotDetail(primary, updCtx)}`);
+    res.json({ ...primary, shared_count: members.length });
   } catch (err) { next(err); }
 });
 
 router.delete('/:id/slots/:slotId', auth, async (req, res, next) => {
   try {
+    // A common class is removed from every batch it was shared with.
+    const ids = await niosGroupSlotIds(req.params.slotId, req.params.id);
+    if (ids.length === 0) return res.status(404).json({ error: 'Not found.' });
+
     // Deleting a slot deletes its classes, so a locked taken class blocks it.
     const linkedForDelete = await sql`
-      SELECT class_status, date FROM nios_class_entries WHERE nios_timetable_slot_id = ${req.params.slotId}
+      SELECT class_status, date FROM nios_class_entries WHERE nios_timetable_slot_id = ANY(${ids})
     `;
     for (const cls of linkedForDelete) {
       const locked = takenEditLock(cls, req.user.role);
       if (locked) return res.status(403).json({ error: locked });
     }
 
-    const classesRemoved = await deleteNiosClassesForSlots([Number(req.params.slotId)]);
-    const rows = await sql`
-      DELETE FROM nios_timetable_slots WHERE id = ${req.params.slotId} AND nios_timetable_id = ${req.params.id} RETURNING *
-    `;
-    if (!rows[0]) return res.status(404).json({ error: 'Not found.' });
-    const delCtx = await niosSlotContext(rows[0], req.params.id);
-    await logActivity(req.user.id, req.user.name, req.user.role, 'delete_nios_slot', 'nios_timetable_slot', rows[0].id,
-      `Deleted NIOS slot${classesRemoved ? ` and ${classesRemoved} linked class${classesRemoved > 1 ? 'es' : ''}` : ''}: ${niosSlotDetail(rows[0], delCtx)}`);
-    res.json({ message: 'Deleted.', classes_removed: classesRemoved });
+    const classesRemoved = await deleteNiosClassesForSlots(ids);
+    const rows = await sql`DELETE FROM nios_timetable_slots WHERE id = ANY(${ids}) RETURNING *`;
+    const primary = rows.find((r) => String(r.id) === String(req.params.slotId)) || rows[0];
+    const delCtx = await niosSlotContext(primary, req.params.id);
+    await logActivity(req.user.id, req.user.name, req.user.role, 'delete_nios_slot', 'nios_timetable_slot', primary.id,
+      `Deleted NIOS slot${rows.length > 1 ? ` (common class, ${rows.length} batches)` : ''}${classesRemoved ? ` and ${classesRemoved} linked class${classesRemoved > 1 ? 'es' : ''}` : ''}: ${niosSlotDetail(primary, delCtx)}`);
+    res.json({ message: 'Deleted.', deleted: rows.length, classes_removed: classesRemoved });
   } catch (err) { next(err); }
 });
 
