@@ -92,16 +92,24 @@ router.get('/university', auth, async (req, res, next) => {
     if (!dates) return;
     const { date_from, date_to } = dates;
 
+    // Collapse common-subject classes the same way /faculty does. A common class
+    // is one session stored as one row per batch, and every batch of a group
+    // shares the university and subject this report groups by — so counting rows
+    // would report it once per batch and add its hours that many times.
     const rows = await sql`
       SELECT
         COALESCE(u.name, 'Unassigned') AS university_name,
         COALESCE(sub.name, 'Unassigned') AS subject_name,
-        COUNT(c.id)::int AS total_classes,
-        COALESCE(SUM(c.total_hours), 0)::numeric(10,2) AS total_hours
-      FROM class_entries c
-      LEFT JOIN universities u ON u.id = c.university_id
-      LEFT JOIN subjects sub ON sub.id = c.subject_id
-      WHERE c.date BETWEEN ${date_from} AND ${date_to}
+        COUNT(*)::int AS total_classes,
+        COALESCE(SUM(g.total_hours), 0)::numeric(10,2) AS total_hours
+      FROM (
+        SELECT DISTINCT ON (COALESCE(class_group_id, id)) id, university_id, subject_id, total_hours
+        FROM class_entries
+        WHERE date BETWEEN ${date_from} AND ${date_to}
+        ORDER BY COALESCE(class_group_id, id), id
+      ) g
+      LEFT JOIN universities u ON u.id = g.university_id
+      LEFT JOIN subjects sub ON sub.id = g.subject_id
       GROUP BY u.id, u.name, sub.id, sub.name
       ORDER BY u.name, sub.name
     `;
