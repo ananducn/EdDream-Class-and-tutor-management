@@ -76,6 +76,8 @@ function FacultyTab() {
   const [dateTo, setDateTo] = useState('');
   const { data, loading, run } = useReport('/nios/reports/faculty');
 
+  const sum = (key) => (data || []).reduce((a, r) => a + Number(r[key] || 0), 0);
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-end gap-3">
@@ -83,29 +85,60 @@ function FacultyTab() {
         <Button onClick={() => run(dateFrom, dateTo)} disabled={loading}>{loading ? 'Loading…' : 'Run Report'}</Button>
         <Button variant="outline" onClick={() => exportCSV('faculty', dateFrom, dateTo)} disabled={loading}>Export CSV</Button>
       </div>
-      <p className="text-xs text-slate-400">
-        NIOS teaching only. A class shared across batches counts once.
-      </p>
       {data && (
         !data.length ? <EmptyState /> : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className={TH}>Faculty</TableHead>
-                <TableHead className={`${TH} text-right`}>Classes</TableHead>
-                <TableHead className={`${TH} text-right`}>Total Hours</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {data.map((row, i) => (
-                <TableRow key={i}>
-                  <TableCell className="font-medium text-slate-900 dark:text-slate-100">{row.faculty_name}</TableCell>
-                  <TableCell className="text-right">{row.total_classes}</TableCell>
-                  <TableCell className="text-right">{Number(row.total_hours).toFixed(2)}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <StatCard label="Faculty" value={data.length} tone="blue" />
+              <StatCard label="Classes" value={sum('total_classes')} sub="shared classes counted once" />
+              <StatCard label="Total Hours" value={sum('total_hours').toFixed(2)} />
+              <StatCard label="Pending Hours" value={sum('pending_hours').toFixed(2)} tone="amber" sub="not marked paid" />
+            </div>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className={TH}>Faculty</TableHead>
+                    <TableHead className={`${TH} text-right`}>Classes</TableHead>
+                    <TableHead className={`${TH} text-right`}>Hours</TableHead>
+                    <TableHead className={`${TH} text-right`}>Online</TableHead>
+                    <TableHead className={`${TH} text-right`}>Offline</TableHead>
+                    <TableHead className={`${TH} text-right`}>Taken</TableHead>
+                    <TableHead className={`${TH} text-right`}>Scheduled</TableHead>
+                    <TableHead className={`${TH} text-right`}>Not Taken</TableHead>
+                    <TableHead className={`${TH} text-right`}>Paid Hrs</TableHead>
+                    <TableHead className={`${TH} text-right`}>Pending Hrs</TableHead>
+                    <TableHead className={`${TH} text-right`}>Batches</TableHead>
+                    <TableHead className={TH}>Streams</TableHead>
+                    <TableHead className={TH}>Subjects</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {data.map((row, i) => (
+                    <TableRow key={i}>
+                      <TableCell className="font-medium text-slate-900 dark:text-slate-100 whitespace-nowrap">{row.faculty_name}</TableCell>
+                      <TableCell className="text-right">{row.total_classes}</TableCell>
+                      <TableCell className="text-right font-medium">{Number(row.total_hours).toFixed(2)}</TableCell>
+                      <TableCell className="text-right text-slate-500 dark:text-slate-400">{row.online_classes}</TableCell>
+                      <TableCell className="text-right text-slate-500 dark:text-slate-400">{row.offline_classes}</TableCell>
+                      <TableCell className="text-right text-green-600 dark:text-green-400">{row.taken_classes}</TableCell>
+                      <TableCell className="text-right text-slate-500 dark:text-slate-400">{row.scheduled_classes}</TableCell>
+                      <TableCell className="text-right text-red-600 dark:text-red-400">{row.not_taken_classes}</TableCell>
+                      <TableCell className="text-right text-green-600 dark:text-green-400">{Number(row.paid_hours).toFixed(2)}</TableCell>
+                      <TableCell className="text-right text-amber-600 dark:text-amber-400">{Number(row.pending_hours).toFixed(2)}</TableCell>
+                      <TableCell className="text-right">{row.batches}</TableCell>
+                      <TableCell className="text-slate-500 dark:text-slate-400">{row.streams}</TableCell>
+                      <TableCell className="text-slate-500 dark:text-slate-400 max-w-[18rem] truncate" title={row.subjects}>{row.subjects}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+            <p className="text-xs text-slate-400">
+              A class shared across batches counts once, but the streams, subjects and batches it reached are all listed —
+              so a faculty can show more batches than classes.
+            </p>
+          </>
         )
       )}
     </div>
