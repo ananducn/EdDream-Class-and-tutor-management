@@ -27,19 +27,54 @@ router.get('/faculty', auth, async (req, res, next) => {
     const dates = requireDates(req, res);
     if (!dates) return;
     const { date_from, date_to } = dates;
+
+    // Two different groupings, deliberately:
+    //   counted — one row per class group, so a session shared across batches
+    //             counts once and its hours are added once.
+    //   reach   — every row, because a common class genuinely does reach both
+    //             batches, so the streams and subjects it touched are all real.
+    // Counting from `reach` would double-count; naming streams from `counted`
+    // would drop the other batch's stream.
     const rows = await sql`
-      SELECT
-        COALESCE(f.name, 'Unassigned') AS faculty_name,
-        COUNT(*)::int AS total_classes,
-        COALESCE(SUM(g.total_hours), 0)::numeric(10,2) AS total_hours
-      FROM (
-        SELECT DISTINCT ON (COALESCE(nios_class_group_id, id)) id, faculty_id, total_hours
+      WITH counted AS (
+        SELECT DISTINCT ON (COALESCE(nios_class_group_id, id))
+          id, faculty_id, total_hours, class_mode, class_status, payment_status
         FROM nios_class_entries
         WHERE date BETWEEN ${date_from} AND ${date_to}
         ORDER BY COALESCE(nios_class_group_id, id), id
-      ) g
+      ),
+      reach AS (
+        SELECT
+          c.faculty_id,
+          string_agg(DISTINCT st.name, ', ') AS streams,
+          string_agg(DISTINCT sub.name, ', ') AS subjects,
+          COUNT(DISTINCT c.nios_batch_id)::int AS batches,
+          COUNT(DISTINCT b.nios_university_id)::int AS universities
+        FROM nios_class_entries c
+        LEFT JOIN nios_batches b   ON b.id = c.nios_batch_id
+        LEFT JOIN nios_streams st  ON st.id = b.nios_stream_id
+        LEFT JOIN nios_subjects sub ON sub.id = c.nios_subject_id
+        WHERE c.date BETWEEN ${date_from} AND ${date_to}
+        GROUP BY c.faculty_id
+      )
+      SELECT
+        COALESCE(f.name, 'Unassigned') AS faculty_name,
+        COUNT(*)::int AS total_classes,
+        COALESCE(SUM(g.total_hours), 0)::numeric(10,2) AS total_hours,
+        COUNT(*) FILTER (WHERE g.class_mode = 'online')::int AS online_classes,
+        COUNT(*) FILTER (WHERE g.class_mode = 'offline')::int AS offline_classes,
+        COUNT(*) FILTER (WHERE g.class_status = 'taken')::int AS taken_classes,
+        COUNT(*) FILTER (WHERE g.class_status = 'scheduled')::int AS scheduled_classes,
+        COUNT(*) FILTER (WHERE g.class_status = 'not_taken')::int AS not_taken_classes,
+        COALESCE(SUM(g.total_hours) FILTER (WHERE g.payment_status = 'paid'), 0)::numeric(10,2) AS paid_hours,
+        COALESCE(SUM(g.total_hours) FILTER (WHERE g.payment_status <> 'paid'), 0)::numeric(10,2) AS pending_hours,
+        COALESCE(r.streams, '—')  AS streams,
+        COALESCE(r.subjects, '—') AS subjects,
+        COALESCE(r.batches, 0)    AS batches
+      FROM counted g
       LEFT JOIN faculty f ON f.id = g.faculty_id
-      GROUP BY f.id, f.name
+      LEFT JOIN reach r   ON r.faculty_id = g.faculty_id
+      GROUP BY f.id, f.name, r.streams, r.subjects, r.batches
       ORDER BY total_hours DESC
     `;
     res.json(rows);
@@ -209,18 +244,44 @@ router.get('/export', auth, async (req, res, next) => {
     let rows = [];
     if (type === 'faculty') {
       rows = await sql`
-        SELECT
-          COALESCE(f.name, 'Unassigned') AS faculty_name,
-          COUNT(*)::int AS total_classes,
-          COALESCE(SUM(g.total_hours), 0)::numeric(10,2) AS total_hours
-        FROM (
-          SELECT DISTINCT ON (COALESCE(nios_class_group_id, id)) id, faculty_id, total_hours
+        WITH counted AS (
+          SELECT DISTINCT ON (COALESCE(nios_class_group_id, id))
+            id, faculty_id, total_hours, class_mode, class_status, payment_status
           FROM nios_class_entries
           WHERE date BETWEEN ${date_from} AND ${date_to}
           ORDER BY COALESCE(nios_class_group_id, id), id
-        ) g
+        ),
+        reach AS (
+          SELECT c.faculty_id,
+            string_agg(DISTINCT st.name, ', ') AS streams,
+            string_agg(DISTINCT sub.name, ', ') AS subjects,
+            COUNT(DISTINCT c.nios_batch_id)::int AS batches
+          FROM nios_class_entries c
+          LEFT JOIN nios_batches b   ON b.id = c.nios_batch_id
+          LEFT JOIN nios_streams st  ON st.id = b.nios_stream_id
+          LEFT JOIN nios_subjects sub ON sub.id = c.nios_subject_id
+          WHERE c.date BETWEEN ${date_from} AND ${date_to}
+          GROUP BY c.faculty_id
+        )
+        SELECT
+          COALESCE(f.name, 'Unassigned') AS faculty_name,
+          COUNT(*)::int AS total_classes,
+          COALESCE(SUM(g.total_hours), 0)::numeric(10,2) AS total_hours,
+          COUNT(*) FILTER (WHERE g.class_mode = 'online')::int AS online_classes,
+          COUNT(*) FILTER (WHERE g.class_mode = 'offline')::int AS offline_classes,
+          COUNT(*) FILTER (WHERE g.class_status = 'taken')::int AS taken_classes,
+          COUNT(*) FILTER (WHERE g.class_status = 'scheduled')::int AS scheduled_classes,
+          COUNT(*) FILTER (WHERE g.class_status = 'not_taken')::int AS not_taken_classes,
+          COALESCE(SUM(g.total_hours) FILTER (WHERE g.payment_status = 'paid'), 0)::numeric(10,2) AS paid_hours,
+          COALESCE(SUM(g.total_hours) FILTER (WHERE g.payment_status <> 'paid'), 0)::numeric(10,2) AS pending_hours,
+          COALESCE(r.batches, 0) AS batches,
+          COALESCE(r.streams, '—') AS streams,
+          COALESCE(r.subjects, '—') AS subjects
+        FROM counted g
         LEFT JOIN faculty f ON f.id = g.faculty_id
-        GROUP BY f.id, f.name ORDER BY total_hours DESC
+        LEFT JOIN reach r   ON r.faculty_id = g.faculty_id
+        GROUP BY f.id, f.name, r.streams, r.subjects, r.batches
+        ORDER BY total_hours DESC
       `;
     } else if (type === 'recordings') {
       // Export the per-subject breakdown rather than two totals — a CSV of one
