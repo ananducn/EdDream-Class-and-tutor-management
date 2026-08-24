@@ -1,1 +1,105 @@
+# Nightly logical backup of the production Postgres.
+#
+# Railway's Hobby plan has no automatic database backups, so this workflow is
+# the backup. It runs pg_dump against the database and keeps the dump as a
+# workflow artifact, which GitHub expires on its own after `retention-days` —
+# no pruning to maintain.
+#
+# Requires one repository secret:
+#   DATABASE_URL — the database's PUBLIC connection string. On Railway that is
+#   the Postgres service's DATABASE_PUBLIC_URL (…proxy.rlwy.net). The private
+#   …railway.internal host only resolves inside Railway's network and will fail
+#   here with ENOTFOUND.
+name: Database backup
 
+on:
+  schedule:
+    # 19:30 UTC = 01:00 IST, daily.
+    - cron: '30 19 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: db-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Pick a pg_dump matching the server
+        id: pg
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error::The DATABASE_URL secret is not set. Add the database's PUBLIC connection string under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          # pg_dump refuses to dump a server newer than itself, so ask the server
+          # which major it is and use that image. psql itself talks to any major.
+          num=$(docker run --rm -e PGCONNECT_TIMEOUT=15 -e DATABASE_URL postgres:18-alpine \
+            psql "$DATABASE_URL" -tAXc 'SHOW server_version_num') || {
+              echo "::error::Could not connect to the database. Check that DATABASE_URL is the public host and that the credentials are current."
+              exit 1
+            }
+          major=$(( num / 10000 ))
+          echo "Server is PostgreSQL $major"
+          echo "image=postgres:${major}-alpine" >> "$GITHUB_OUTPUT"
+
+      - name: Dump the database
+        id: dump
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          IMAGE: ${{ steps.pg.outputs.image }}
+        run: |
+          set -euo pipefail
+          mkdir -p backups
+          stamp=$(date -u +%Y%m%d-%H%M%S)
+          file="backups/eddream-${stamp}.dump"
+          # --format=custom so a restore can be selective and parallel; it is
+          # already compressed. --no-owner/--no-privileges keeps the dump
+          # restorable as whatever role owns the target, which matters when the
+          # target is a different host than the one it came from.
+          docker run --rm -e DATABASE_URL -v "$PWD/backups:/backups" "$IMAGE" \
+            pg_dump "$DATABASE_URL" \
+              --format=custom \
+              --compress=9 \
+              --no-owner \
+              --no-privileges \
+              --file="/${file}"
+          sudo chown "$(id -u):$(id -g)" "$file"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          echo "name=eddream-db-${stamp}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the dump is readable
+        env:
+          IMAGE: ${{ steps.pg.outputs.image }}
+          FILE: ${{ steps.dump.outputs.file }}
+        run: |
+          set -euo pipefail
+          # A dump that cannot be listed cannot be restored. pg_restore --list
+          # parses the whole archive, so this catches truncation and corruption
+          # without needing a scratch database to restore into.
+          tables=$(docker run --rm -v "$PWD/backups:/backups" "$IMAGE" \
+            pg_restore --list "/${FILE}" | grep -c '^[0-9].*TABLE DATA' || true)
+          size=$(du -h "$FILE" | cut -f1)
+          if [ "$tables" -eq 0 ]; then
+            echo "::error::The dump contains no table data. Treat this run as failed."
+            exit 1
+          fi
+          echo "### Backup complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- File: \`$(basename "$FILE")\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Size: $size" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Tables with data: $tables" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the dump
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.dump.outputs.name }}
+          path: ${{ steps.dump.outputs.file }}
+          retention-days: 90
+          if-no-files-found: error
+          compression-level: 0
