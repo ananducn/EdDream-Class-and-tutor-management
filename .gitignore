@@ -47,3 +47,7 @@ lerna-debug.log*
 *.sln
 *.sw?
 Thumbs.db
+
+# Local database dumps (see BACKUP.md)
+backups/
+*.dump
