@@ -771,7 +771,7 @@ export default function TimetableCalendarPage() {
 
       {/* ── Add Slot dialog ── */}
       <Dialog open={slotOpen} onOpenChange={setSlotOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Add Slot</DialogTitle></DialogHeader>
           <form onSubmit={handleAddSlot} className="space-y-4 pt-1">
             <div className="space-y-1.5">
@@ -876,7 +876,7 @@ export default function TimetableCalendarPage() {
 
       {/* ── Edit Slot dialog ── */}
       <Dialog open={editSlotOpen} onOpenChange={setEditSlotOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Edit Slot</DialogTitle></DialogHeader>
           {editSlotTarget?.slot?.shared_batches?.length > 0 && (
             <p className="text-xs rounded-md border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950 text-indigo-800 dark:text-indigo-200 p-2">

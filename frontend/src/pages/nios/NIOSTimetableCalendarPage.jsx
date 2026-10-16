@@ -586,7 +586,7 @@ export default function NIOSTimetableCalendarPage() {
 
       {/* Add Slot dialog */}
       <Dialog open={slotOpen} onOpenChange={setSlotOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Add Slot</DialogTitle></DialogHeader>
           <form onSubmit={handleAddSlot} className="space-y-4 pt-1">
             <div className="space-y-1.5">
@@ -658,7 +658,7 @@ export default function NIOSTimetableCalendarPage() {
 
       {/* Edit Slot dialog */}
       <Dialog open={editSlotOpen} onOpenChange={setEditSlotOpen}>
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto">
           <DialogHeader><DialogTitle>Edit Slot</DialogTitle></DialogHeader>
           <form onSubmit={handleEditSlot} className="space-y-4 pt-1">
             <div className="space-y-1.5">
